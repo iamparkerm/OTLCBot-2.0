@@ -1,4 +1,5 @@
 import os
+import asyncio
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -51,7 +52,7 @@ def build_weekly_report(chat_id: int) -> str:
     return "\n".join(lines)
 
 
-def send_weekly() -> None:
+async def send_weekly_async() -> None:
     if not TOKEN:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in .env")
     if not CHAT_ID:
@@ -60,7 +61,11 @@ def send_weekly() -> None:
     chat_id_int = int(CHAT_ID)
     bot = Bot(token=TOKEN)
     text = build_weekly_report(chat_id_int)
-    bot.send_message(chat_id=chat_id_int, text=text)
+    await bot.send_message(chat_id=chat_id_int, text=text)
+
+
+def send_weekly() -> None:
+    asyncio.run(send_weekly_async())
 
 
 if __name__ == "__main__":
