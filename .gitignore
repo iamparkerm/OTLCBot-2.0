@@ -1,4 +1,25 @@
-.venv/
-.env
-*.db
+# Python
 __pycache__/
+*.pyc
+
+# Virtualenv
+.venv/
+
+# Env / secrets
+.env
+
+# Logs
+*.log
+weekly.log
+prune.log
+otlc_prune.log
+
+# Editor junk
+*.save
+*~
+*.swp
+*.swo
+
+# OS junk
+.DS_Store
+Thumbs.db
