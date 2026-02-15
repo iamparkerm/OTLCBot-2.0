@@ -1,15 +1,17 @@
 import os
 import sqlite3
+from pathlib import Path
 from datetime import timezone
 
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, ContextTypes, filters
 
-load_dotenv()
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(dotenv_path=ROOT / ".env")
 
-DB_PATH = "data.db"
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+DB_PATH = os.getenv("DB_PATH", str(ROOT / "data.db"))
 
 
 def init_db() -> None:

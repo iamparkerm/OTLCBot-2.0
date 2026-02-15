@@ -1,6 +1,6 @@
 import os
-import time
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
@@ -12,7 +12,7 @@ RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "365"))
 # Vacuum can take time; default off unless explicitly enabled
 DO_VACUUM = os.getenv("PRUNE_VACUUM", "0") == "1"
 
-CUTOFF_EPOCH = int(time.time()) - RETENTION_DAYS * 24 * 60 * 60
+CUTOFF_ISO = (datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)).isoformat()
 
 def main():
     if not os.path.exists(DB_PATH):
@@ -41,13 +41,13 @@ def main():
             raise RuntimeError(f"Could not find a timestamp column in messages table. Found: {cols}")
 
         # Delete old rows
-        cur.execute(f"SELECT COUNT(*) FROM messages WHERE {ts_col} < ?;", (CUTOFF_EPOCH,))
+        cur.execute(f"SELECT COUNT(*) FROM messages WHERE {ts_col} < ?;", (CUTOFF_ISO,))
         to_delete = cur.fetchone()[0]
 
-        cur.execute(f"DELETE FROM messages WHERE {ts_col} < ?;", (CUTOFF_EPOCH,))
+        cur.execute(f"DELETE FROM messages WHERE {ts_col} < ?;", (CUTOFF_ISO,))
         conn.commit()
 
-        print(f"Pruned {to_delete} rows older than {RETENTION_DAYS} days (cutoff epoch={CUTOFF_EPOCH}).")
+        print(f"Pruned {to_delete} rows older than {RETENTION_DAYS} days (cutoff={CUTOFF_ISO}).")
 
         if DO_VACUUM:
             print("Running VACUUM (can take a while)...")
