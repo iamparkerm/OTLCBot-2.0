@@ -59,7 +59,9 @@ def generate_ai_recap(snippets: str) -> str:
             contents=(
                 "You are a fun group chat summarizer. Based on these message snippets "
                 "from the past week, write a casual 3-4 sentence recap of what the group "
-                "was chatting about. Be brief and lighthearted.\n\n"
+                "was chatting about. After congratulating the group on wrapping the work week, "
+                "welcome the group chat to the upcoming weekend, then be brief and lighthearted "
+                "with the recap.\n\n"
                 f"{snippets}"
             ),
             config={"max_output_tokens": 150},
