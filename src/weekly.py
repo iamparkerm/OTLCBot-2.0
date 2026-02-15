@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from telegram import Bot
-#from ai_weekly_summary import summarize_week
 
 
 # ---------- Config / env ----------
@@ -19,7 +18,8 @@ if not DB_PATH.exists():
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+ENABLE_AI_SUMMARY = os.getenv("ENABLE_AI_SUMMARY", "false").lower() == "true"
 
 # ---------- Helpers ----------
 def get_weekly_snippets(conn: sqlite3.Connection, chat_id: int, since_iso: str, limit: int = 30) -> str:
@@ -47,6 +47,27 @@ def get_weekly_snippets(conn: sqlite3.Connection, chat_id: int, since_iso: str, 
             snippets.append(text[:200])
 
     return "\n".join(snippets)
+
+
+def generate_ai_recap(snippets: str) -> str:
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=(
+                "You are a fun group chat summarizer. Based on these message snippets "
+                "from the past week, write a casual 3-4 sentence recap of what the group "
+                "was chatting about. Be brief and lighthearted.\n\n"
+                f"{snippets}"
+            ),
+            config={"max_output_tokens": 150},
+        )
+        return response.text.strip() if response.text else ""
+    except Exception as e:
+        print(f"AI recap failed: {e}")
+        return ""
 
 
 def build_weekly_report(chat_id: int) -> str:
@@ -85,7 +106,15 @@ def build_weekly_report(chat_id: int) -> str:
         else:
             lines.append("- (no messages logged)")
 
-        # Optional AI recap TURNED OFF FOR NOW
+        if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
+            snippets = get_weekly_snippets(conn, chat_id, since)
+            if snippets:
+                recap = generate_ai_recap(snippets)
+                if recap:
+                    lines.append("")
+                    lines.append("🤖 AI Recap:")
+                    lines.append(recap)
+
     return "\n".join(lines)
 
 
