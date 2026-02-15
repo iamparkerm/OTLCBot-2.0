@@ -17,7 +17,7 @@ if not DB_PATH.exists():
     raise FileNotFoundError(f"DB not found at {DB_PATH}")
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+CHAT_IDS = [cid.strip() for cid in os.getenv("TELEGRAM_CHAT_ID", "").split(",") if cid.strip()]
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ENABLE_AI_SUMMARY = os.getenv("ENABLE_AI_SUMMARY", "false").lower() == "true"
 
@@ -123,13 +123,15 @@ def build_weekly_report(chat_id: int) -> str:
 async def send_weekly_async() -> None:
     if not TOKEN:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in .env")
-    if not CHAT_ID:
+    if not CHAT_IDS:
         raise RuntimeError("Missing TELEGRAM_CHAT_ID in .env")
 
-    chat_id_int = int(CHAT_ID)
     bot = Bot(token=TOKEN)
-    text = build_weekly_report(chat_id_int)
-    await bot.send_message(chat_id=chat_id_int, text=text)
+    for chat_id_str in CHAT_IDS:
+        chat_id_int = int(chat_id_str)
+        text = build_weekly_report(chat_id_int)
+        await bot.send_message(chat_id=chat_id_int, text=text)
+        print(f"Sent weekly report to {chat_id_int}")
 
 
 def main() -> None:
