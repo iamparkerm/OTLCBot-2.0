@@ -120,8 +120,51 @@ def _irony_pct_to_grade(irony_pct: float) -> str:
         return "F"
 
 
-def generate_sincerity_index(snippets: str) -> str:
-    """Use Gemini to score irony/sincerity in the week's messages."""
+def _get_last_week_group_grade(conn: sqlite3.Connection, chat_id: int, current_week: str) -> str | None:
+    """Get the overall group grade from the previous week."""
+    row = conn.execute(
+        """
+        SELECT week_of, irony_pct FROM sincerity_scores
+        WHERE chat_id = ? AND username = '__group__' AND week_of < ?
+        ORDER BY week_of DESC LIMIT 1;
+        """,
+        (chat_id, current_week),
+    ).fetchone()
+    if row:
+        return _irony_pct_to_grade(row[1])
+    return None
+
+
+def _get_last_week_user_score(conn: sqlite3.Connection, chat_id: int, username: str, current_week: str) -> tuple[str | None, float | None]:
+    """Get a user's grade and irony % from the previous week."""
+    row = conn.execute(
+        """
+        SELECT irony_pct FROM sincerity_scores
+        WHERE chat_id = ? AND username = ? AND week_of < ?
+        ORDER BY week_of DESC LIMIT 1;
+        """,
+        (chat_id, username, current_week),
+    ).fetchone()
+    if row:
+        return _irony_pct_to_grade(row[0]), row[0]
+    return None, None
+
+
+def _trend_arrow(current_irony: float, prev_irony: float | None) -> str:
+    """Return a trend description comparing current to previous irony %."""
+    if prev_irony is None:
+        return "First week tracked!"
+    diff = current_irony - prev_irony
+    if diff < -5:
+        return "Trending more sincere 🙏"
+    elif diff > 5:
+        return "Trending more ironic 🤔"
+    else:
+        return "Holding steady"
+
+
+def analyze_sincerity(snippets: str) -> dict | None:
+    """Use Gemini to score irony/sincerity. Returns raw data dict or None."""
     try:
         from google import genai
         import json
@@ -146,42 +189,74 @@ def generate_sincerity_index(snippets: str) -> str:
         )
 
         raw = response.text.strip() if response.text else ""
-        # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
-        data = json.loads(raw)
-        group_irony = float(data.get("group_irony_pct", 0))
-        users = data.get("users", {})
-
-        grade = _irony_pct_to_grade(group_irony)
-        irony_int = round(group_irony)
-
-        lines = [
-            f'📖 DFW Sincerity Index: {grade}',
-            f"   {irony_int}% irony detected in messages this week.",
-            "",
-        ]
-
-        if users:
-            # Sort by irony descending
-            sorted_users = sorted(users.items(), key=lambda x: x[1], reverse=True)
-            lines.append("   Per-member breakdown:")
-            for username, user_irony in sorted_users:
-                user_grade = _irony_pct_to_grade(float(user_irony))
-                lines.append(f"   - @{username}: {user_grade} ({round(float(user_irony))}% ironic)")
-
-        lines.append("")
-        lines.append(
-            '   "Risk the yawn, the rolled eyes, the smarmy smile, the nudged ribs, '
-            'the accusations of sentimentality and credulity." — DFW'
-        )
-
-        return "\n".join(lines)
+        return json.loads(raw)
 
     except Exception as e:
-        print(f"Sincerity index failed: {e}")
-        return ""
+        print(f"Sincerity analysis failed: {e}")
+        return None
+
+
+def save_sincerity_scores(conn: sqlite3.Connection, chat_id: int, week_of: str, data: dict) -> None:
+    """Persist this week's sincerity scores for trend tracking."""
+    group_irony = float(data.get("group_irony_pct", 0))
+    conn.execute(
+        "INSERT INTO sincerity_scores (chat_id, week_of, username, irony_pct, grade) VALUES (?, ?, ?, ?, ?);",
+        (chat_id, week_of, "__group__", group_irony, _irony_pct_to_grade(group_irony)),
+    )
+    for username, irony_pct in data.get("users", {}).items():
+        conn.execute(
+            "INSERT INTO sincerity_scores (chat_id, week_of, username, irony_pct, grade) VALUES (?, ?, ?, ?, ?);",
+            (chat_id, week_of, username, float(irony_pct), _irony_pct_to_grade(float(irony_pct))),
+        )
+
+
+def build_group_sincerity_message(conn: sqlite3.Connection, chat_id: int, data: dict, week_of: str) -> str:
+    """Build the group-facing sincerity message (trend only, no per-user)."""
+    group_irony = float(data.get("group_irony_pct", 0))
+    grade = _irony_pct_to_grade(group_irony)
+    irony_int = round(group_irony)
+
+    last_grade = _get_last_week_group_grade(conn, chat_id, week_of)
+    if last_grade:
+        trend_str = f"   Last week: {last_grade} → This week: {grade}"
+    else:
+        trend_str = "   First week tracked!"
+
+    lines = [
+        f"📖 DFW Sincerity Index: {grade}",
+        f"   {irony_int}% irony detected in messages this week.",
+        trend_str,
+        "",
+        '   "Risk the yawn, the rolled eyes, the smarmy smile, the nudged ribs,',
+        '   the accusations of sentimentality and credulity." — DFW',
+    ]
+    return "\n".join(lines)
+
+
+def build_user_dm(conn: sqlite3.Connection, chat_id: int, username: str, irony_pct: float, week_of: str) -> str:
+    """Build a private DM for an individual user with their score + trend."""
+    grade = _irony_pct_to_grade(irony_pct)
+    irony_int = round(irony_pct)
+    prev_grade, prev_irony = _get_last_week_user_score(conn, chat_id, username, week_of)
+    trend = _trend_arrow(irony_pct, prev_irony)
+
+    lines = [
+        f"📖 Your DFW Sincerity Index: {grade}",
+        f"   {irony_int}% irony detected in your messages this week.",
+    ]
+    if prev_grade:
+        lines.append(f"   Last week: {prev_grade} → This week: {grade}. {trend}")
+    else:
+        lines.append(f"   {trend}")
+    lines.append("")
+    lines.append(
+        '   "Risk the yawn, the rolled eyes, the smarmy smile, the nudged ribs,\n'
+        '   the accusations of sentimentality and credulity." — DFW'
+    )
+    return "\n".join(lines)
 
 
 def build_weekly_report(chat_id: int) -> str:
@@ -229,16 +304,6 @@ def build_weekly_report(chat_id: int) -> str:
                     lines.append("🤖 AI Recap:")
                     lines.append(recap)
 
-        if ENABLE_SINCERITY_INDEX and GEMINI_API_KEY:
-            sincerity_snippets = get_sincerity_snippets(
-                conn, chat_id, since, SINCERITY_SNIPPET_LIMIT
-            )
-            if sincerity_snippets:
-                sincerity_report = generate_sincerity_index(sincerity_snippets)
-                if sincerity_report:
-                    lines.append("")
-                    lines.append(sincerity_report)
-
     return "\n".join(lines)
 
 
@@ -249,11 +314,62 @@ async def send_weekly_async() -> None:
         raise RuntimeError("Missing TELEGRAM_CHAT_ID in .env")
 
     bot = Bot(token=TOKEN)
+    week_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
     for chat_id_str in CHAT_IDS:
         chat_id_int = int(chat_id_str)
         text = build_weekly_report(chat_id_int)
+
+        # --- Sincerity Index (group trend + individual DMs) ---
+        sincerity_data = None
+        if ENABLE_SINCERITY_INDEX and GEMINI_API_KEY:
+            since_dt = datetime.now(timezone.utc) - timedelta(days=7)
+            since = since_dt.isoformat()
+
+            with sqlite3.connect(DB_PATH) as conn:
+                sincerity_snippets = get_sincerity_snippets(
+                    conn, chat_id_int, since, SINCERITY_SNIPPET_LIMIT
+                )
+                if sincerity_snippets:
+                    sincerity_data = analyze_sincerity(sincerity_snippets)
+
+                if sincerity_data:
+                    # Build group message (trend only, no per-user)
+                    group_msg = build_group_sincerity_message(
+                        conn, chat_id_int, sincerity_data, week_of
+                    )
+                    text += "\n\n" + group_msg
+
+                    # Save scores for trend tracking (before DMs so trends work)
+                    save_sincerity_scores(conn, chat_id_int, week_of, sincerity_data)
+
+        # Send the group report
         await bot.send_message(chat_id=chat_id_int, text=text)
         print(f"Sent weekly report to {chat_id_int}")
+
+        # Send individual DMs
+        if sincerity_data and sincerity_data.get("users"):
+            with sqlite3.connect(DB_PATH) as conn:
+                # Look up user_ids for each username so we can DM them
+                for username, irony_pct in sincerity_data["users"].items():
+                    row = conn.execute(
+                        """
+                        SELECT DISTINCT user_id FROM messages
+                        WHERE chat_id = ? AND username = ? AND user_id IS NOT NULL
+                        ORDER BY id DESC LIMIT 1;
+                        """,
+                        (chat_id_int, username),
+                    ).fetchone()
+
+                    if row and row[0]:
+                        dm_text = build_user_dm(
+                            conn, chat_id_int, username, float(irony_pct), week_of
+                        )
+                        try:
+                            await bot.send_message(chat_id=row[0], text=dm_text)
+                            print(f"  DM sent to @{username} ({row[0]})")
+                        except Exception as e:
+                            print(f"  DM to @{username} failed: {e}")
 
 
 def main() -> None:

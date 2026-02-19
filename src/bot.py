@@ -55,6 +55,22 @@ def init_db() -> None:
             );
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sincerity_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                week_of TEXT NOT NULL,
+                username TEXT NOT NULL,
+                user_id INTEGER,
+                irony_pct REAL NOT NULL,
+                grade TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sincerity_chat_week ON sincerity_scores(chat_id, week_of);"
+        )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
