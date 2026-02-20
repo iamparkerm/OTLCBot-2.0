@@ -23,6 +23,15 @@ ENABLE_AI_SUMMARY = os.getenv("ENABLE_AI_SUMMARY", "false").lower() == "true"
 ENABLE_SINCERITY_INDEX = os.getenv("ENABLE_SINCERITY_INDEX", "false").lower() == "true"
 SINCERITY_SNIPPET_LIMIT = int(os.getenv("SINCERITY_SNIPPET_LIMIT", "50"))
 
+# Owl Town combined summary: multiple groups aggregated into one report
+OWL_TOWN_CHAT_IDS = [cid.strip() for cid in os.getenv("OWL_TOWN_CHAT_IDS", "").split(",") if cid.strip()]
+OWL_TOWN_SEND_TO = os.getenv("OWL_TOWN_SEND_TO", "")  # chat_id to send combined report to
+OWL_TOWN_NAMES = {}  # map chat_id -> friendly name
+for pair in os.getenv("OWL_TOWN_NAMES", "").split(","):
+    if "=" in pair:
+        cid, name = pair.split("=", 1)
+        OWL_TOWN_NAMES[cid.strip()] = name.strip()
+
 # ---------- Helpers ----------
 def get_weekly_snippets(conn: sqlite3.Connection, chat_id: int, since_iso: str, limit: int = 30) -> str:
     rows = conn.execute(
@@ -307,6 +316,92 @@ def build_weekly_report(chat_id: int) -> str:
     return "\n".join(lines)
 
 
+def build_owl_town_report() -> str:
+    """Build a combined weekly report across all Owl Town groups."""
+    since_dt = datetime.now(timezone.utc) - timedelta(days=7)
+    since = since_dt.isoformat()
+
+    with sqlite3.connect(DB_PATH) as conn:
+        chat_ids_int = [int(cid) for cid in OWL_TOWN_CHAT_IDS]
+        placeholders = ",".join("?" * len(chat_ids_int))
+
+        # Total messages across all groups
+        grand_total = conn.execute(
+            f"SELECT COUNT(*) FROM messages WHERE chat_id IN ({placeholders}) AND sent_at_utc >= ?;",
+            (*chat_ids_int, since),
+        ).fetchone()[0]
+
+        # Top posters across all groups
+        top = conn.execute(
+            f"""
+            SELECT COALESCE(username, full_name, 'unknown') AS who, COUNT(*) AS cnt
+            FROM messages
+            WHERE chat_id IN ({placeholders}) AND sent_at_utc >= ?
+            GROUP BY who
+            ORDER BY cnt DESC
+            LIMIT 10;
+            """,
+            (*chat_ids_int, since),
+        ).fetchall()
+
+        # Per-group breakdown
+        per_group = conn.execute(
+            f"""
+            SELECT chat_id, COUNT(*) AS cnt
+            FROM messages
+            WHERE chat_id IN ({placeholders}) AND sent_at_utc >= ?
+            GROUP BY chat_id
+            ORDER BY cnt DESC;
+            """,
+            (*chat_ids_int, since),
+        ).fetchall()
+
+        lines = [
+            "🦉 Owl Town Chats — Weekly Report",
+            f"Window: {since_dt.strftime('%Y-%m-%d')} → {datetime.now(timezone.utc).strftime('%Y-%m-%d')} (UTC)",
+            f"Total messages across all chats: {grand_total}",
+            "",
+            "💬 Per-chat breakdown:",
+        ]
+
+        for cid, cnt in per_group:
+            name = OWL_TOWN_NAMES.get(str(cid), f"Chat {cid}")
+            lines.append(f"- {name}: {cnt}")
+
+        # Show any groups with 0 messages
+        active_cids = {cid for cid, _ in per_group}
+        for cid in chat_ids_int:
+            if cid not in active_cids:
+                name = OWL_TOWN_NAMES.get(str(cid), f"Chat {cid}")
+                lines.append(f"- {name}: 0")
+
+        lines.append("")
+        lines.append("🏆 Top posters (all chats):")
+
+        if top:
+            for who, cnt in top:
+                lines.append(f"- {who}: {cnt}")
+        else:
+            lines.append("- (no messages logged)")
+
+        # Combined AI recap
+        if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
+            all_snippets = []
+            for cid in chat_ids_int:
+                s = get_weekly_snippets(conn, cid, since, limit=10)
+                if s:
+                    all_snippets.append(s)
+            combined_snippets = "\n".join(all_snippets)
+            if combined_snippets:
+                recap = generate_ai_recap(combined_snippets)
+                if recap:
+                    lines.append("")
+                    lines.append("🤖 AI Recap:")
+                    lines.append(recap)
+
+    return "\n".join(lines)
+
+
 async def send_weekly_async() -> None:
     if not TOKEN:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in .env")
@@ -370,6 +465,36 @@ async def send_weekly_async() -> None:
                             print(f"  DM sent to @{username} ({row[0]})")
                         except Exception as e:
                             print(f"  DM to @{username} failed: {e}")
+
+    # --- Owl Town combined report ---
+    if OWL_TOWN_CHAT_IDS and OWL_TOWN_SEND_TO:
+        owl_text = build_owl_town_report()
+
+        # Sincerity index across all Owl Town chats
+        if ENABLE_SINCERITY_INDEX and GEMINI_API_KEY:
+            since_dt = datetime.now(timezone.utc) - timedelta(days=7)
+            since = since_dt.isoformat()
+
+            with sqlite3.connect(DB_PATH) as conn:
+                all_snippets = []
+                for cid_str in OWL_TOWN_CHAT_IDS:
+                    s = get_sincerity_snippets(conn, int(cid_str), since, SINCERITY_SNIPPET_LIMIT // len(OWL_TOWN_CHAT_IDS) or 10)
+                    if s:
+                        all_snippets.append(s)
+                combined = "\n".join(all_snippets)
+
+                if combined:
+                    sincerity_data = analyze_sincerity(combined)
+                    if sincerity_data:
+                        # Use a synthetic chat_id for Owl Town trend tracking
+                        owl_town_id = 0  # special ID for combined
+                        group_msg = build_group_sincerity_message(conn, owl_town_id, sincerity_data, week_of)
+                        owl_text += "\n\n" + group_msg
+                        save_sincerity_scores(conn, owl_town_id, week_of, sincerity_data)
+
+        send_to_int = int(OWL_TOWN_SEND_TO)
+        await bot.send_message(chat_id=send_to_int, text=owl_text)
+        print(f"Sent Owl Town combined report to {send_to_int}")
 
 
 def main() -> None:
