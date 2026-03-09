@@ -68,11 +68,9 @@ def generate_ai_recap(snippets: str) -> str:
         response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=(
-                "You are a fun group chat summarizer. Based on these message snippets "
-                "from the past week, write a casual 3-4 sentence recap of what the group "
-                "was chatting about. After congratulating the group on wrapping the work week, "
-                "welcome the group chat to the upcoming weekend, then be brief and lighthearted "
-                "with the recap.\n\n"
+                "You are a group chat summarizer. Based on these message snippets "
+                "from the past week, write a straightforward 3-4 sentence recap of what the group "
+                "was chatting about. Be brief and genuine — no forced enthusiasm or cheerfulness.\n\n"
                 f"{snippets}"
             ),
             config={"max_output_tokens": 150},
@@ -239,8 +237,10 @@ def build_group_sincerity_message(conn: sqlite3.Connection, chat_id: int, data: 
         f"   {irony_int}% irony detected in messages this week.",
         trend_str,
         "",
-        '   "Risk the yawn, the rolled eyes, the smarmy smile, the nudged ribs,',
-        '   the accusations of sentimentality and credulity." — DFW',
+        '   "What passes for hip cynical transcendence of sentiment is really',
+        '   some kind of fear of being really human, since to be really human',
+        '   is probably to be unavoidably sentimental and naïve and goo-prone."',
+        '   — Infinite Jest',
     ]
     return "\n".join(lines)
 
@@ -262,8 +262,10 @@ def build_user_dm(conn: sqlite3.Connection, chat_id: int, username: str, irony_p
         lines.append(f"   {trend}")
     lines.append("")
     lines.append(
-        '   "Risk the yawn, the rolled eyes, the smarmy smile, the nudged ribs,\n'
-        '   the accusations of sentimentality and credulity." — DFW'
+        '   "What passes for hip cynical transcendence of sentiment is really\n'
+        '   some kind of fear of being really human, since to be really human\n'
+        '   is probably to be unavoidably sentimental and naïve and goo-prone."\n'
+        '   — Infinite Jest'
     )
     return "\n".join(lines)
 
@@ -411,8 +413,17 @@ async def send_weekly_async() -> None:
     bot = Bot(token=TOKEN)
     week_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    # Skip individual reports for chats that will get the Owl Town combined report
+    owl_town_send_to_int = int(OWL_TOWN_SEND_TO) if OWL_TOWN_SEND_TO else None
+
     for chat_id_str in CHAT_IDS:
         chat_id_int = int(chat_id_str)
+
+        # This chat gets the combined Owl Town report instead
+        if owl_town_send_to_int and chat_id_int == owl_town_send_to_int:
+            print(f"Skipping individual report for {chat_id_int} (will get Owl Town combined)")
+            continue
+
         text = build_weekly_report(chat_id_int)
 
         # --- Sincerity Index (group trend + individual DMs) ---
