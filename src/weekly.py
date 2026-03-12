@@ -1,3 +1,4 @@
+import io
 import os
 import asyncio
 import sqlite3
@@ -79,6 +80,48 @@ def generate_ai_recap(snippets: str) -> str:
     except Exception as e:
         print(f"AI recap failed: {e}")
         return ""
+
+
+def generate_weekly_image(snippets: str) -> bytes | None:
+    """
+    Generate a weekly illustration from conversation snippets.
+    Returns raw image bytes or None on failure.
+    """
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        # Step 1: ask the text model to write a vivid image prompt from the snippets
+        prompt_response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=(
+                "Based on these group chat snippets from the past week, write a single "
+                "sentence describing a fun, illustrated scene that captures the week's vibe. "
+                "Be specific and visual. No more than 30 words.\n\n"
+                f"{snippets}"
+            ),
+            config={"max_output_tokens": 60},
+        )
+        image_prompt = prompt_response.text.strip()
+        image_prompt += ", New Yorker cartoon style, single panel, loose ink illustration, subtle humor"
+        print(f"  Image prompt: {image_prompt}")
+
+        # Step 2: generate the image
+        image_response = client.models.generate_content(
+            model="gemini-2.5-flash-image",
+            contents=image_prompt,
+            config=types.GenerateContentConfig(
+                response_modalities=["IMAGE", "TEXT"]
+            ),
+        )
+        for part in image_response.parts:
+            if part.inline_data is not None:
+                return part.inline_data.data  # raw bytes
+        return None
+    except Exception as e:
+        print(f"Image generation failed: {e}")
+        return None
 
 
 def get_sincerity_snippets(conn: sqlite3.Connection, chat_id: int, since_iso: str, limit: int = 50) -> str:
@@ -449,7 +492,17 @@ async def send_weekly_async() -> None:
                     # Save scores for trend tracking (before DMs so trends work)
                     save_sincerity_scores(conn, chat_id_int, week_of, sincerity_data)
 
-        # Send the group report
+        # Generate weekly image and send
+        image_bytes = None
+        if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
+            since_dt_img = datetime.now(timezone.utc) - timedelta(days=7)
+            with sqlite3.connect(DB_PATH) as conn:
+                img_snippets = get_weekly_snippets(conn, chat_id_int, since_dt_img.isoformat())
+                if img_snippets:
+                    image_bytes = generate_weekly_image(img_snippets)
+
+        if image_bytes:
+            await bot.send_photo(chat_id=chat_id_int, photo=io.BytesIO(image_bytes))
         await bot.send_message(chat_id=chat_id_int, text=text)
         print(f"Sent weekly report to {chat_id_int}")
 
@@ -503,7 +556,22 @@ async def send_weekly_async() -> None:
                         owl_text += "\n\n" + group_msg
                         save_sincerity_scores(conn, owl_town_id, week_of, sincerity_data)
 
+        # Generate Owl Town weekly image
+        owl_image_bytes = None
+        if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
+            since_dt_img = datetime.now(timezone.utc) - timedelta(days=7)
+            with sqlite3.connect(DB_PATH) as conn:
+                owl_img_snippets = []
+                for cid in [int(c) for c in OWL_TOWN_CHAT_IDS]:
+                    s = get_weekly_snippets(conn, cid, since_dt_img.isoformat(), limit=10)
+                    if s:
+                        owl_img_snippets.append(s)
+                if owl_img_snippets:
+                    owl_image_bytes = generate_weekly_image("\n".join(owl_img_snippets))
+
         send_to_int = int(OWL_TOWN_SEND_TO)
+        if owl_image_bytes:
+            await bot.send_photo(chat_id=send_to_int, photo=io.BytesIO(owl_image_bytes))
         await bot.send_message(chat_id=send_to_int, text=owl_text)
         print(f"Sent Owl Town combined report to {send_to_int}")
 
