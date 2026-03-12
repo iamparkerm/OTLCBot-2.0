@@ -124,6 +124,25 @@ def generate_weekly_image(snippets: str) -> bytes | None:
         return None
 
 
+def get_user_snippets(conn: sqlite3.Connection, chat_id: int, username: str, since_iso: str, limit: int = 20) -> str:
+    """Get message snippets for a single user."""
+    rows = conn.execute(
+        """
+        SELECT text
+        FROM messages
+        WHERE chat_id = ?
+          AND username = ?
+          AND sent_at_utc >= ?
+          AND text IS NOT NULL
+          AND LENGTH(TRIM(text)) >= 10
+        ORDER BY RANDOM()
+        LIMIT ?;
+        """,
+        (chat_id, username, since_iso, limit),
+    ).fetchall()
+    return "\n".join(row[0][:200] for row in rows if row[0])
+
+
 def get_sincerity_snippets(conn: sqlite3.Connection, chat_id: int, since_iso: str, limit: int = 50) -> str:
     """Get snippets grouped by user for sincerity analysis."""
     rows = conn.execute(
@@ -525,6 +544,14 @@ async def send_weekly_async() -> None:
                             conn, chat_id_int, username, float(irony_pct), week_of
                         )
                         try:
+                            # Generate personal cartoon from user's messages
+                            if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
+                                since_dm = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+                                user_snippets = get_user_snippets(conn, chat_id_int, username, since_dm)
+                                if user_snippets:
+                                    dm_image = generate_weekly_image(user_snippets)
+                                    if dm_image:
+                                        await bot.send_photo(chat_id=row[0], photo=io.BytesIO(dm_image))
                             await bot.send_message(chat_id=row[0], text=dm_text)
                             print(f"  DM sent to @{username} ({row[0]})")
                         except Exception as e:
