@@ -306,21 +306,21 @@ def update_user_profile(conn: sqlite3.Connection, user_id: int, username: str, s
     return profile_text
 
 
-def get_user_snippets(conn: sqlite3.Connection, chat_id: int, username: str, since_iso: str, limit: int = 20) -> str:
-    """Get message snippets for a single user."""
+def get_user_snippets(conn: sqlite3.Connection, chat_id: int, display_name: str, since_iso: str, limit: int = 20) -> str:
+    """Get message snippets for a single user (matches username or full_name)."""
     rows = conn.execute(
         """
         SELECT text
         FROM messages
         WHERE chat_id = ?
-          AND username = ?
+          AND (username = ? OR (username IS NULL AND full_name = ?))
           AND sent_at_utc >= ?
           AND text IS NOT NULL
           AND LENGTH(TRIM(text)) >= 10
         ORDER BY RANDOM()
         LIMIT ?;
         """,
-        (chat_id, username, since_iso, limit),
+        (chat_id, display_name, display_name, since_iso, limit),
     ).fetchall()
     return "\n".join(row[0][:200] for row in rows if row[0])
 
@@ -718,35 +718,38 @@ async def send_weekly_async() -> None:
         if sincerity_data and sincerity_data.get("users"):
             with sqlite3.connect(DB_PATH) as conn:
                 # Look up user_ids for each username so we can DM them
-                for username, irony_pct in sincerity_data["users"].items():
+                for display_name, irony_pct in sincerity_data["users"].items():
+                    # Look up user_id by username or full_name
                     row = conn.execute(
                         """
                         SELECT DISTINCT user_id FROM messages
-                        WHERE chat_id = ? AND username = ? AND user_id IS NOT NULL
+                        WHERE chat_id = ?
+                          AND (username = ? OR (username IS NULL AND full_name = ?))
+                          AND user_id IS NOT NULL
                         ORDER BY id DESC LIMIT 1;
                         """,
-                        (chat_id_int, username),
+                        (chat_id_int, display_name, display_name),
                     ).fetchone()
 
                     if row and row[0]:
                         dm_text = build_user_dm(
-                            conn, chat_id_int, username, float(irony_pct), week_of
+                            conn, chat_id_int, display_name, float(irony_pct), week_of
                         )
                         try:
                             # Update user profile and generate personal cartoon
                             if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
                                 since_dm = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-                                user_snippets = get_user_snippets(conn, chat_id_int, username, since_dm)
+                                user_snippets = get_user_snippets(conn, chat_id_int, display_name, since_dm)
                                 if user_snippets:
-                                    user_profile = update_user_profile(conn, row[0], username, user_snippets)
-                                    print(f"    Updated profile for @{username} ({len(user_profile)} chars)")
+                                    user_profile = update_user_profile(conn, row[0], display_name, user_snippets)
+                                    print(f"    Updated profile for {display_name} ({len(user_profile)} chars)")
                                     dm_image = generate_weekly_image(user_snippets, context=user_profile)
                                     if dm_image:
                                         await bot.send_photo(chat_id=row[0], photo=io.BytesIO(dm_image))
                             await bot.send_message(chat_id=row[0], text=dm_text)
-                            print(f"  DM sent to @{username} ({row[0]})")
+                            print(f"  DM sent to {display_name} ({row[0]})")
                         except Exception as e:
-                            print(f"  DM to @{username} failed: {e}")
+                            print(f"  DM to {display_name} failed: {e}")
 
     # --- Owl Town combined report ---
     if OWL_TOWN_CHAT_IDS and OWL_TOWN_SEND_TO:
