@@ -82,20 +82,31 @@ def generate_ai_recap(snippets: str) -> str:
         return ""
 
 
-def generate_weekly_image(snippets: str) -> bytes | None:
+def generate_weekly_image(snippets: str, context: str = "") -> bytes | None:
     """
     Generate a weekly illustration from conversation snippets.
-    Returns raw image bytes or None on failure.
+    Optionally accepts persistent context (user profile or group theme)
+    to make the image more personal. Returns raw image bytes or None on failure.
     """
     try:
         from google import genai
         from google.genai import types
 
         client = genai.Client(api_key=GEMINI_API_KEY)
+
+        context_block = ""
+        if context:
+            context_block = (
+                "Context about the people/group (use this to make the scene more personal "
+                "and reference recurring themes when relevant):\n"
+                f"{context}\n\n"
+            )
+
         # Step 1: ask the text model to write a vivid image prompt from the snippets
         prompt_response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=(
+                f"{context_block}"
                 "Based on these group chat snippets from the past week, write a single "
                 "sentence describing a fun, illustrated scene that captures the week's vibe. "
                 "Be specific and visual. No more than 30 words.\n\n"
@@ -122,6 +133,177 @@ def generate_weekly_image(snippets: str) -> bytes | None:
     except Exception as e:
         print(f"Image generation failed: {e}")
         return None
+
+
+def _ensure_profile_tables(conn: sqlite3.Connection) -> None:
+    """Create profile tables if they don't exist (weekly.py doesn't import bot.init_db)."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            profile_text TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(user_id)
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS group_themes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            theme_text TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(chat_id)
+        );
+        """
+    )
+
+
+def get_group_theme(conn: sqlite3.Connection, chat_id: int) -> str | None:
+    """Retrieve the current group theme text, or None if no profile exists yet."""
+    row = conn.execute(
+        "SELECT theme_text FROM group_themes WHERE chat_id = ?;",
+        (chat_id,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def update_group_theme(conn: sqlite3.Connection, chat_id: int, snippets: str) -> str:
+    """Use Gemini to update the group's theme profile based on this week's snippets."""
+    existing = get_group_theme(conn, chat_id)
+
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+        if existing:
+            prompt = (
+                "You maintain a rolling profile of a group chat's culture and personality. "
+                "Here is the existing profile:\n\n"
+                f"--- EXISTING PROFILE ---\n{existing}\n--- END PROFILE ---\n\n"
+                "And here are this week's message snippets:\n\n"
+                f"{snippets}\n\n"
+                "Update the profile by integrating any new observations. "
+                "Track: running jokes, recurring references, group dynamics, shared interests, "
+                "notable events, and communication style. "
+                "Consolidate and merge — don't just append. Drop stale details that "
+                "haven't recurred. Keep the profile under 400 words. "
+                "Write in third person, present tense. Output ONLY the updated profile text."
+            )
+        else:
+            prompt = (
+                "Based on these group chat message snippets, write an initial profile of this "
+                "group chat's culture and personality. "
+                "Track: running jokes, recurring references, group dynamics, shared interests, "
+                "notable events, and communication style. "
+                "Keep it under 300 words. Write in third person, present tense. "
+                "Output ONLY the profile text.\n\n"
+                f"{snippets}"
+            )
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=prompt,
+            config={"max_output_tokens": 500},
+        )
+        theme_text = response.text.strip() if response.text else ""
+        if not theme_text:
+            return existing or ""
+
+    except Exception as e:
+        print(f"  Group theme update failed: {e}")
+        return existing or ""
+
+    now = datetime.now(timezone.utc).isoformat()
+    if existing:
+        conn.execute(
+            "UPDATE group_themes SET theme_text = ?, updated_at = ?, version = version + 1 WHERE chat_id = ?;",
+            (theme_text, now, chat_id),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO group_themes (chat_id, theme_text, updated_at, version) VALUES (?, ?, ?, 1);",
+            (chat_id, theme_text, now),
+        )
+    conn.commit()
+    return theme_text
+
+
+def get_user_profile(conn: sqlite3.Connection, user_id: int) -> str | None:
+    """Retrieve the current user profile text, or None if no profile exists yet."""
+    row = conn.execute(
+        "SELECT profile_text FROM user_profiles WHERE user_id = ?;",
+        (user_id,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def update_user_profile(conn: sqlite3.Connection, user_id: int, username: str, snippets: str) -> str:
+    """Use Gemini to update a user's profile based on this week's snippets."""
+    existing = get_user_profile(conn, user_id)
+
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+        if existing:
+            prompt = (
+                f"You maintain a rolling personality profile for a group chat member (@{username}). "
+                "Here is the existing profile:\n\n"
+                f"--- EXISTING PROFILE ---\n{existing}\n--- END PROFILE ---\n\n"
+                f"And here are @{username}'s messages from this week:\n\n"
+                f"{snippets}\n\n"
+                "Update the profile by integrating any new observations. "
+                "Track: recurring topics, interests, personality traits, communication style, "
+                "humor patterns, and notable opinions. "
+                "Consolidate and merge — don't just append. Drop stale details that "
+                "haven't recurred. Keep the profile under 300 words. "
+                "Write in third person, present tense. Output ONLY the updated profile text."
+            )
+        else:
+            prompt = (
+                f"Based on these messages from @{username} in a group chat, write an initial "
+                "personality profile. "
+                "Track: recurring topics, interests, personality traits, communication style, "
+                "humor patterns, and notable opinions. "
+                "Keep it under 200 words. Write in third person, present tense. "
+                "Output ONLY the profile text.\n\n"
+                f"{snippets}"
+            )
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=prompt,
+            config={"max_output_tokens": 400},
+        )
+        profile_text = response.text.strip() if response.text else ""
+        if not profile_text:
+            return existing or ""
+
+    except Exception as e:
+        print(f"  User profile update failed for @{username}: {e}")
+        return existing or ""
+
+    now = datetime.now(timezone.utc).isoformat()
+    if existing:
+        conn.execute(
+            "UPDATE user_profiles SET profile_text = ?, username = ?, updated_at = ?, version = version + 1 WHERE user_id = ?;",
+            (profile_text, username, now, user_id),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO user_profiles (user_id, username, profile_text, updated_at, version) VALUES (?, ?, ?, ?, 1);",
+            (user_id, username, profile_text, now),
+        )
+    conn.commit()
+    return profile_text
 
 
 def get_user_snippets(conn: sqlite3.Connection, chat_id: int, username: str, since_iso: str, limit: int = 20) -> str:
@@ -472,6 +654,10 @@ async def send_weekly_async() -> None:
     if not CHAT_IDS:
         raise RuntimeError("Missing TELEGRAM_CHAT_ID in .env")
 
+    # Ensure profile tables exist (weekly.py doesn't import bot.init_db)
+    with sqlite3.connect(DB_PATH) as conn:
+        _ensure_profile_tables(conn)
+
     bot = Bot(token=TOKEN)
     week_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -511,14 +697,17 @@ async def send_weekly_async() -> None:
                     # Save scores for trend tracking (before DMs so trends work)
                     save_sincerity_scores(conn, chat_id_int, week_of, sincerity_data)
 
-        # Generate weekly image and send
+        # Update group theme and generate weekly image
         image_bytes = None
+        group_theme = ""
         if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
             since_dt_img = datetime.now(timezone.utc) - timedelta(days=7)
             with sqlite3.connect(DB_PATH) as conn:
                 img_snippets = get_weekly_snippets(conn, chat_id_int, since_dt_img.isoformat())
                 if img_snippets:
-                    image_bytes = generate_weekly_image(img_snippets)
+                    group_theme = update_group_theme(conn, chat_id_int, img_snippets)
+                    print(f"  Updated group theme for {chat_id_int} ({len(group_theme)} chars)")
+                    image_bytes = generate_weekly_image(img_snippets, context=group_theme)
 
         if image_bytes:
             await bot.send_photo(chat_id=chat_id_int, photo=io.BytesIO(image_bytes))
@@ -544,12 +733,14 @@ async def send_weekly_async() -> None:
                             conn, chat_id_int, username, float(irony_pct), week_of
                         )
                         try:
-                            # Generate personal cartoon from user's messages
+                            # Update user profile and generate personal cartoon
                             if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
                                 since_dm = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
                                 user_snippets = get_user_snippets(conn, chat_id_int, username, since_dm)
                                 if user_snippets:
-                                    dm_image = generate_weekly_image(user_snippets)
+                                    user_profile = update_user_profile(conn, row[0], username, user_snippets)
+                                    print(f"    Updated profile for @{username} ({len(user_profile)} chars)")
+                                    dm_image = generate_weekly_image(user_snippets, context=user_profile)
                                     if dm_image:
                                         await bot.send_photo(chat_id=row[0], photo=io.BytesIO(dm_image))
                             await bot.send_message(chat_id=row[0], text=dm_text)
@@ -583,7 +774,7 @@ async def send_weekly_async() -> None:
                         owl_text += "\n\n" + group_msg
                         save_sincerity_scores(conn, owl_town_id, week_of, sincerity_data)
 
-        # Generate Owl Town weekly image
+        # Generate Owl Town weekly image with combined group themes as context
         owl_image_bytes = None
         if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
             since_dt_img = datetime.now(timezone.utc) - timedelta(days=7)
@@ -594,7 +785,15 @@ async def send_weekly_async() -> None:
                     if s:
                         owl_img_snippets.append(s)
                 if owl_img_snippets:
-                    owl_image_bytes = generate_weekly_image("\n".join(owl_img_snippets))
+                    # Gather themes from constituent groups for context
+                    owl_context_parts = []
+                    for cid in [int(c) for c in OWL_TOWN_CHAT_IDS]:
+                        theme = get_group_theme(conn, cid)
+                        if theme:
+                            name = OWL_TOWN_NAMES.get(str(cid), f"Chat {cid}")
+                            owl_context_parts.append(f"[{name}]: {theme}")
+                    owl_context = "\n\n".join(owl_context_parts)
+                    owl_image_bytes = generate_weekly_image("\n".join(owl_img_snippets), context=owl_context)
 
         send_to_int = int(OWL_TOWN_SEND_TO)
         if owl_image_bytes:
