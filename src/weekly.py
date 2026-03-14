@@ -1,5 +1,6 @@
 import io
 import os
+import time
 import asyncio
 import sqlite3
 from pathlib import Path
@@ -82,11 +83,12 @@ def generate_ai_recap(snippets: str) -> str:
         return ""
 
 
-def generate_weekly_image(snippets: str, context: str = "") -> bytes | None:
+def generate_weekly_image(snippets: str, context: str = "", retries: int = 2) -> bytes | None:
     """
     Generate a weekly illustration from conversation snippets.
     Optionally accepts persistent context (user profile or group theme)
     to make the image more personal. Returns raw image bytes or None on failure.
+    Retries on rate-limit errors with exponential backoff.
     """
     try:
         from google import genai
@@ -114,21 +116,36 @@ def generate_weekly_image(snippets: str, context: str = "") -> bytes | None:
             ),
             config={"max_output_tokens": 60},
         )
-        image_prompt = prompt_response.text.strip()
+        image_prompt = (prompt_response.text or "").strip()
+        if not image_prompt or len(image_prompt) < 10:
+            print("  Image prompt generation returned empty/too-short result, skipping image")
+            return None
         image_prompt += ", New Yorker cartoon style, single panel, loose ink illustration, subtle humor"
         print(f"  Image prompt: {image_prompt}")
 
-        # Step 2: generate the image
-        image_response = client.models.generate_content(
-            model="gemini-2.5-flash-image",
-            contents=image_prompt,
-            config=types.GenerateContentConfig(
-                response_modalities=["IMAGE", "TEXT"]
-            ),
-        )
-        for part in image_response.parts:
-            if part.inline_data is not None:
-                return part.inline_data.data  # raw bytes
+        # Step 2: generate the image (with retry on rate limits)
+        for attempt in range(retries + 1):
+            try:
+                image_response = client.models.generate_content(
+                    model="gemini-2.5-flash-image",
+                    contents=image_prompt,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE", "TEXT"]
+                    ),
+                )
+                for part in image_response.parts:
+                    if part.inline_data is not None:
+                        return part.inline_data.data  # raw bytes
+                print("  Image response had no image data")
+                return None
+            except Exception as img_err:
+                err_str = str(img_err)
+                if ("429" in err_str or "RESOURCE_EXHAUSTED" in err_str) and attempt < retries:
+                    wait = 15 * (attempt + 1)
+                    print(f"  Image rate-limited, waiting {wait}s before retry {attempt + 2}/{retries + 1}...")
+                    time.sleep(wait)
+                    continue
+                raise
         return None
     except Exception as e:
         print(f"Image generation failed: {e}")
@@ -708,6 +725,8 @@ async def send_weekly_async() -> None:
                     group_theme = update_group_theme(conn, chat_id_int, img_snippets)
                     print(f"  Updated group theme for {chat_id_int} ({len(group_theme)} chars)")
                     image_bytes = generate_weekly_image(img_snippets, context=group_theme)
+                    if image_bytes:
+                        time.sleep(20)  # pace image API calls
 
         if image_bytes:
             await bot.send_photo(chat_id=chat_id_int, photo=io.BytesIO(image_bytes))
@@ -746,6 +765,7 @@ async def send_weekly_async() -> None:
                                     dm_image = generate_weekly_image(user_snippets, context=user_profile)
                                     if dm_image:
                                         await bot.send_photo(chat_id=row[0], photo=io.BytesIO(dm_image))
+                                        time.sleep(20)  # pace image API calls
                             await bot.send_message(chat_id=row[0], text=dm_text)
                             print(f"  DM sent to {display_name} ({row[0]})")
                         except Exception as e:
