@@ -1,0 +1,16 @@
+[Unit]
+Description=OTLCBot Cloudflare Quick Tunnel
+After=network-online.target otlcbot-webapp.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=parker
+ExecStart=/usr/local/bin/cloudflared tunnel --url http://localhost:5000 --no-autoupdate
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

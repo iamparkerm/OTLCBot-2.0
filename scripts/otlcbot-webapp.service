@@ -1,0 +1,16 @@
+[Unit]
+Description=OTLCBot WebApp (Gallery MiniApp)
+After=network.target
+
+[Service]
+Type=simple
+User=parker
+WorkingDirectory=/home/parker/OTLCBot-2.0
+ExecStart=/home/parker/OTLCBot-2.0/.venv/bin/python src/webapp.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

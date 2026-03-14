@@ -1,0 +1,15 @@
+[Unit]
+Description=Update OTLCBot WEBAPP_URL from tunnel
+After=otlcbot-tunnel.service
+Requires=otlcbot-tunnel.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/bin/bash /home/parker/OTLCBot-2.0/scripts/update-tunnel-url.sh
+RemainAfterExit=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
