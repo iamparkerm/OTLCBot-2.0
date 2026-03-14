@@ -4,10 +4,10 @@ from pathlib import Path
 from datetime import timezone
 
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, WebAppInfo
 from telegram.ext import (
     Application, MessageHandler, CommandHandler, ConversationHandler,
-    ContextTypes, filters,
+    CallbackQueryHandler, ContextTypes, filters,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +15,7 @@ load_dotenv(dotenv_path=ROOT / ".env")
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DB_PATH = os.getenv("DB_PATH", str(ROOT / "data.db"))
+WEBAPP_URL = os.getenv("WEBAPP_URL", "")
 
 # Conversation states for /bet
 BET_DESCRIPTION, BET_SETTLEMENT, BET_WAGER = range(3)
@@ -95,6 +96,21 @@ def init_db() -> None:
                 UNIQUE(chat_id)
             );
             """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS weekly_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                week_of TEXT NOT NULL,
+                image_prompt TEXT,
+                telegram_file_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_weekly_images_chat_week ON weekly_images(chat_id, week_of);"
         )
 
 
@@ -245,6 +261,109 @@ async def settlebet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f"🏆 Bet #{bet_id} settled!\n\n🎲 {row[1]}\n🥇 Winner: {winner}")
 
 
+# ---------- /gallery ----------
+async def gallery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    with sqlite3.connect(DB_PATH) as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM weekly_images WHERE chat_id = ?;",
+            (chat_id,),
+        ).fetchone()[0]
+
+    if total == 0:
+        await update.message.reply_text("No cartoons yet! They'll appear after the next weekly report.")
+        return
+
+    # Show the newest image (last index)
+    await _send_gallery_page(update.message, chat_id, total - 1, total, edit=False)
+
+
+async def _send_gallery_page(target, chat_id: int, index: int, total: int, edit: bool = False) -> None:
+    """Send or edit a gallery page showing image at `index` (0 = oldest)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT week_of, image_prompt, telegram_file_id FROM weekly_images "
+            "WHERE chat_id = ? ORDER BY week_of ASC, id ASC LIMIT 1 OFFSET ?;",
+            (chat_id, index),
+        ).fetchone()
+
+    if not row:
+        return
+
+    week_of, prompt, file_id = row
+    caption = f"Week of {week_of}"
+    if prompt:
+        caption += f"\n{prompt[:200]}"
+
+    # Build navigation buttons
+    buttons = []
+    if index > 0:
+        buttons.append(InlineKeyboardButton("< Prev", callback_data=f"gallery:{chat_id}:{index - 1}"))
+    buttons.append(InlineKeyboardButton(f"{index + 1}/{total}", callback_data="gallery:noop"))
+    if index < total - 1:
+        buttons.append(InlineKeyboardButton("Next >", callback_data=f"gallery:{chat_id}:{index + 1}"))
+    keyboard = InlineKeyboardMarkup([buttons])
+
+    if edit:
+        try:
+            await target.edit_message_media(
+                media=InputMediaPhoto(media=file_id, caption=caption),
+                reply_markup=keyboard,
+            )
+        except Exception:
+            pass  # message may have expired
+    else:
+        await target.reply_photo(photo=file_id, caption=caption, reply_markup=keyboard)
+
+
+async def gallery_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    if data == "gallery:noop":
+        return
+
+    parts = data.split(":")
+    if len(parts) != 3:
+        return
+
+    _, chat_id_str, index_str = parts
+    chat_id = int(chat_id_str)
+
+    # Security: only allow gallery browsing for the current chat
+    if chat_id != update.effective_chat.id:
+        return
+
+    index = int(index_str)
+    with sqlite3.connect(DB_PATH) as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM weekly_images WHERE chat_id = ?;",
+            (chat_id,),
+        ).fetchone()[0]
+
+    if index < 0 or index >= total:
+        return
+
+    await _send_gallery_page(query.message, chat_id, index, total, edit=True)
+
+
+# ---------- /dashboard (Telegram WebApp) ----------
+async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not WEBAPP_URL:
+        await update.message.reply_text(
+            "Dashboard not configured yet.\n(Set WEBAPP_URL in .env after running the web server.)"
+        )
+        return
+
+    chat_id = update.effective_chat.id
+    url = f"{WEBAPP_URL.rstrip('/')}?chat_id={chat_id}"
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🖼️ Open Cartoon Gallery", web_app=WebAppInfo(url=url))
+    ]])
+    await update.message.reply_text("📊 OTLC Dashboard", reply_markup=keyboard)
+
+
 async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if msg is None:
@@ -304,6 +423,9 @@ def main() -> None:
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("bets", bets_list))
     app.add_handler(CommandHandler("settlebet", settlebet))
+    app.add_handler(CommandHandler("gallery", gallery))
+    app.add_handler(CommandHandler("dashboard", dashboard))
+    app.add_handler(CallbackQueryHandler(gallery_callback, pattern=r"^gallery:"))
     app.add_handler(MessageHandler(filters.TEXT | filters.Caption, log_message))
 
     app.run_polling(allowed_updates=Update.ALL_TYPES)

@@ -34,6 +34,14 @@ for pair in os.getenv("OWL_TOWN_NAMES", "").split(","):
         cid, name = pair.split("=", 1)
         OWL_TOWN_NAMES[cid.strip()] = name.strip()
 
+# Admin DM config (for weekly cost report)
+ADMIN_USER_ID = os.getenv("ADMIN_USER_ID", "")  # KarlPopper's Telegram user_id
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "KarlPopper")  # username to look up if no user_id
+
+# Gemini pricing constants (update if pricing changes)
+COST_PER_IMAGE = 0.039          # gemini-2.5-flash-image, per image
+COST_PER_TEXT_CALL = 0.0015     # gemini-2.5-flash-lite, rough average per API call (~1500 tokens total)
+
 # ---------- Helpers ----------
 def get_weekly_snippets(conn: sqlite3.Connection, chat_id: int, since_iso: str, limit: int = 30) -> str:
     rows = conn.execute(
@@ -83,11 +91,11 @@ def generate_ai_recap(snippets: str) -> str:
         return ""
 
 
-def generate_weekly_image(snippets: str, context: str = "", retries: int = 2) -> bytes | None:
+def generate_weekly_image(snippets: str, context: str = "", retries: int = 2) -> tuple[bytes, str] | tuple[None, None]:
     """
     Generate a weekly illustration from conversation snippets.
     Optionally accepts persistent context (user profile or group theme)
-    to make the image more personal. Returns raw image bytes or None on failure.
+    to make the image more personal. Returns (image_bytes, prompt_text) or (None, None).
     Retries on rate-limit errors with exponential backoff.
     """
     try:
@@ -106,7 +114,7 @@ def generate_weekly_image(snippets: str, context: str = "", retries: int = 2) ->
 
         # Step 1: ask the text model to write a vivid image prompt from the snippets
         prompt_response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.5-flash-lite",
             contents=(
                 f"{context_block}"
                 "Based on these group chat snippets from the past week, write a single "
@@ -119,7 +127,7 @@ def generate_weekly_image(snippets: str, context: str = "", retries: int = 2) ->
         image_prompt = (prompt_response.text or "").strip()
         if not image_prompt or len(image_prompt) < 10:
             print("  Image prompt generation returned empty/too-short result, skipping image")
-            return None
+            return None, None
         image_prompt += ", New Yorker cartoon style, single panel, loose ink illustration, subtle humor"
         print(f"  Image prompt: {image_prompt}")
 
@@ -135,9 +143,9 @@ def generate_weekly_image(snippets: str, context: str = "", retries: int = 2) ->
                 )
                 for part in image_response.parts:
                     if part.inline_data is not None:
-                        return part.inline_data.data  # raw bytes
+                        return part.inline_data.data, image_prompt  # raw bytes + prompt
                 print("  Image response had no image data")
-                return None
+                return None, None
             except Exception as img_err:
                 err_str = str(img_err)
                 if ("429" in err_str or "RESOURCE_EXHAUSTED" in err_str) and attempt < retries:
@@ -146,10 +154,10 @@ def generate_weekly_image(snippets: str, context: str = "", retries: int = 2) ->
                     time.sleep(wait)
                     continue
                 raise
-        return None
+        return None, None
     except Exception as e:
         print(f"Image generation failed: {e}")
-        return None
+        return None, None
 
 
 def _ensure_profile_tables(conn: sqlite3.Connection) -> None:
@@ -178,6 +186,21 @@ def _ensure_profile_tables(conn: sqlite3.Connection) -> None:
             UNIQUE(chat_id)
         );
         """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS weekly_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            week_of TEXT NOT NULL,
+            image_prompt TEXT,
+            telegram_file_id TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_weekly_images_chat_week ON weekly_images(chat_id, week_of);"
     )
 
 
@@ -665,6 +688,47 @@ def build_owl_town_report() -> str:
     return "\n".join(lines)
 
 
+async def _send_cost_dm(bot, images_sent: int, text_calls: int) -> None:
+    """DM the admin (KarlPopper) with a Gemini API cost estimate for this run."""
+    # Find admin user_id: prefer explicit env var, fall back to DB lookup by username
+    admin_id = int(ADMIN_USER_ID) if ADMIN_USER_ID else None
+    if not admin_id:
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                row = conn.execute(
+                    "SELECT DISTINCT user_id FROM messages WHERE username = ? AND user_id IS NOT NULL LIMIT 1;",
+                    (ADMIN_USERNAME,),
+                ).fetchone()
+                if row:
+                    admin_id = row[0]
+        except Exception:
+            pass
+
+    if not admin_id:
+        print("  Cost DM skipped: could not find admin user_id")
+        return
+
+    img_cost = images_sent * COST_PER_IMAGE
+    text_cost = text_calls * COST_PER_TEXT_CALL
+    total = img_cost + text_cost
+    monthly_est = total * 4.33  # ~4.33 weeks/month
+
+    msg = (
+        f"🤖 Weekly Gemini API cost estimate\n\n"
+        f"  Images generated: {images_sent} × ${COST_PER_IMAGE:.3f} = ${img_cost:.3f}\n"
+        f"  Text API calls:  {text_calls} × ${COST_PER_TEXT_CALL:.4f} = ${text_cost:.4f}\n"
+        f"  ─────────────────────────────\n"
+        f"  This run: ~${total:.3f}\n"
+        f"  Monthly est. (×4.33): ~${monthly_est:.2f}\n\n"
+        f"  (Rates: image ${COST_PER_IMAGE}/img, text ${COST_PER_TEXT_CALL}/call)"
+    )
+    try:
+        await bot.send_message(chat_id=admin_id, text=msg)
+        print(f"  Cost DM sent to admin ({admin_id})")
+    except Exception as e:
+        print(f"  Cost DM failed: {e}")
+
+
 async def send_weekly_async() -> None:
     if not TOKEN:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in .env")
@@ -677,6 +741,8 @@ async def send_weekly_async() -> None:
 
     bot = Bot(token=TOKEN)
     week_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    images_sent = 0   # track for cost DM
+    text_calls = 0    # track for cost DM
 
     # Skip individual reports for chats that will get the Owl Town combined report
     owl_town_send_to_int = int(OWL_TOWN_SEND_TO) if OWL_TOWN_SEND_TO else None
@@ -703,6 +769,8 @@ async def send_weekly_async() -> None:
                 )
                 if sincerity_snippets:
                     sincerity_data = analyze_sincerity(sincerity_snippets)
+                    if sincerity_data:
+                        text_calls += 1  # count sincerity analysis
 
                 if sincerity_data:
                     # Build group message (trend only, no per-user)
@@ -716,6 +784,7 @@ async def send_weekly_async() -> None:
 
         # Update group theme and generate weekly image
         image_bytes = None
+        image_prompt = None
         group_theme = ""
         if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
             since_dt_img = datetime.now(timezone.utc) - timedelta(days=7)
@@ -724,12 +793,22 @@ async def send_weekly_async() -> None:
                 if img_snippets:
                     group_theme = update_group_theme(conn, chat_id_int, img_snippets)
                     print(f"  Updated group theme for {chat_id_int} ({len(group_theme)} chars)")
-                    image_bytes = generate_weekly_image(img_snippets, context=group_theme)
+                    text_calls += 2  # group theme update + image prompt (step 1)
+                    image_bytes, image_prompt = generate_weekly_image(img_snippets, context=group_theme)
                     if image_bytes:
                         time.sleep(20)  # pace image API calls
 
         if image_bytes:
-            await bot.send_photo(chat_id=chat_id_int, photo=io.BytesIO(image_bytes))
+            sent_msg = await bot.send_photo(chat_id=chat_id_int, photo=io.BytesIO(image_bytes))
+            if sent_msg.photo:
+                images_sent += 1
+                with sqlite3.connect(DB_PATH) as conn:
+                    conn.execute(
+                        "INSERT INTO weekly_images (chat_id, week_of, image_prompt, telegram_file_id, created_at) "
+                        "VALUES (?, ?, ?, ?, ?);",
+                        (chat_id_int, week_of, image_prompt, sent_msg.photo[-1].file_id,
+                         datetime.now(timezone.utc).isoformat()),
+                    )
         await bot.send_message(chat_id=chat_id_int, text=text)
         print(f"Sent weekly report to {chat_id_int}")
 
@@ -755,17 +834,19 @@ async def send_weekly_async() -> None:
                             conn, chat_id_int, display_name, float(irony_pct), week_of
                         )
                         try:
-                            # Update user profile and generate personal cartoon
+                            # Update user profile (still accumulate profiles even without images)
                             if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
                                 since_dm = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
                                 user_snippets = get_user_snippets(conn, chat_id_int, display_name, since_dm)
                                 if user_snippets:
                                     user_profile = update_user_profile(conn, row[0], display_name, user_snippets)
                                     print(f"    Updated profile for {display_name} ({len(user_profile)} chars)")
-                                    dm_image = generate_weekly_image(user_snippets, context=user_profile)
-                                    if dm_image:
-                                        await bot.send_photo(chat_id=row[0], photo=io.BytesIO(dm_image))
-                                        time.sleep(20)  # pace image API calls
+                                    text_calls += 1  # user profile update
+                                    # TODO: re-enable DM images once rate limits are sorted out
+                                    # dm_image = generate_weekly_image(user_snippets, context=user_profile)
+                                    # if dm_image:
+                                    #     await bot.send_photo(chat_id=row[0], photo=io.BytesIO(dm_image))
+                                    #     time.sleep(20)  # pace image API calls
                             await bot.send_message(chat_id=row[0], text=dm_text)
                             print(f"  DM sent to {display_name} ({row[0]})")
                         except Exception as e:
@@ -791,6 +872,7 @@ async def send_weekly_async() -> None:
                 if combined:
                     sincerity_data = analyze_sincerity(combined)
                     if sincerity_data:
+                        text_calls += 1  # Owl Town sincerity analysis
                         # Use a synthetic chat_id for Owl Town trend tracking
                         owl_town_id = 0  # special ID for combined
                         group_msg = build_group_sincerity_message(conn, owl_town_id, sincerity_data, week_of)
@@ -799,6 +881,7 @@ async def send_weekly_async() -> None:
 
         # Generate Owl Town weekly image with combined group themes as context
         owl_image_bytes = None
+        owl_image_prompt = None
         if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
             since_dt_img = datetime.now(timezone.utc) - timedelta(days=7)
             with sqlite3.connect(DB_PATH) as conn:
@@ -816,13 +899,26 @@ async def send_weekly_async() -> None:
                             name = OWL_TOWN_NAMES.get(str(cid), f"Chat {cid}")
                             owl_context_parts.append(f"[{name}]: {theme}")
                     owl_context = "\n\n".join(owl_context_parts)
-                    owl_image_bytes = generate_weekly_image("\n".join(owl_img_snippets), context=owl_context)
+                    text_calls += 2  # Owl Town image prompt (step 1) + theme context
+                    owl_image_bytes, owl_image_prompt = generate_weekly_image("\n".join(owl_img_snippets), context=owl_context)
 
         send_to_int = int(OWL_TOWN_SEND_TO)
         if owl_image_bytes:
-            await bot.send_photo(chat_id=send_to_int, photo=io.BytesIO(owl_image_bytes))
+            sent_msg = await bot.send_photo(chat_id=send_to_int, photo=io.BytesIO(owl_image_bytes))
+            if sent_msg.photo:
+                images_sent += 1
+                with sqlite3.connect(DB_PATH) as conn:
+                    conn.execute(
+                        "INSERT INTO weekly_images (chat_id, week_of, image_prompt, telegram_file_id, created_at) "
+                        "VALUES (?, ?, ?, ?, ?);",
+                        (send_to_int, week_of, owl_image_prompt, sent_msg.photo[-1].file_id,
+                         datetime.now(timezone.utc).isoformat()),
+                    )
         await bot.send_message(chat_id=send_to_int, text=owl_text)
         print(f"Sent Owl Town combined report to {send_to_int}")
+
+    # --- Admin cost DM ---
+    await _send_cost_dm(bot, images_sent, text_calls)
 
 
 def main() -> None:
