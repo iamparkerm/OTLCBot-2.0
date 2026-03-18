@@ -1,7 +1,8 @@
 import os
 import sqlite3
+import sys
 from pathlib import Path
-from datetime import timezone
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, WebAppInfo
@@ -16,6 +17,11 @@ load_dotenv(dotenv_path=ROOT / ".env")
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DB_PATH = os.getenv("DB_PATH", str(ROOT / "data.db"))
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
+ENABLE_AGENT = os.getenv("ENABLE_AGENT", "false").lower() == "true"
+AGENT_MSG_THRESHOLD = int(os.getenv("AGENT_MSG_THRESHOLD", "50"))
+
+# In-memory counter: messages since last agent run, per chat
+_msg_counter: dict[int, int] = {}
 
 # Conversation states for /bet
 BET_DESCRIPTION, BET_SETTLEMENT, BET_WAGER = range(3)
@@ -85,6 +91,11 @@ def init_db() -> None:
             );
             """
         )
+        # Migration: add case_file_text column if missing
+        try:
+            conn.execute("ALTER TABLE user_profiles ADD COLUMN case_file_text TEXT;")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS group_themes (
@@ -111,6 +122,51 @@ def init_db() -> None:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_weekly_images_chat_week ON weekly_images(chat_id, week_of);"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS watchlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                added_by_id INTEGER NOT NULL,
+                added_by_username TEXT,
+                added_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS watchlist_completions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NOT NULL REFERENCES watchlist(id),
+                user_id INTEGER NOT NULL,
+                completed_at TEXT NOT NULL,
+                rating INTEGER,
+                UNIQUE(item_id, user_id)
+            );
+            """
+        )
+        # Migration: add rating column if missing
+        try:
+            conn.execute("ALTER TABLE watchlist_completions ADD COLUMN rating INTEGER;")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                reason TEXT,
+                executed_at TEXT NOT NULL,
+                success INTEGER DEFAULT 1
+            );
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_actions_chat ON agent_actions(chat_id, executed_at);"
         )
 
 
@@ -358,10 +414,19 @@ async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     chat_id = update.effective_chat.id
     url = f"{WEBAPP_URL.rstrip('/')}?chat_id={chat_id}"
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🖼️ Open Cartoon Gallery", web_app=WebAppInfo(url=url))
-    ]])
-    await update.message.reply_text("📊 OTLC Dashboard", reply_markup=keyboard)
+
+    # Try WebApp button first (opens as Telegram MiniApp), fall back to URL button
+    try:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("📊 Open Dashboard", web_app=WebAppInfo(url=url))
+        ]])
+        await update.message.reply_text("📊 OTLC Dashboard", reply_markup=keyboard)
+    except Exception as e:
+        print(f"[dashboard] WebApp button failed: {type(e).__name__}: {e}")
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("📊 Open Dashboard", url=url)
+        ]])
+        await update.message.reply_text("📊 OTLC Dashboard", reply_markup=keyboard)
 
 
 async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -397,6 +462,165 @@ async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             ),
         )
 
+    # Agent trigger: run agent loop after AGENT_MSG_THRESHOLD messages
+    if ENABLE_AGENT:
+        chat_id = msg.chat_id
+        _msg_counter[chat_id] = _msg_counter.get(chat_id, 0) + 1
+        if _msg_counter[chat_id] >= AGENT_MSG_THRESHOLD:
+            _msg_counter[chat_id] = 0
+            # Schedule agent loop as a background task (non-blocking)
+            import asyncio
+            asyncio.ensure_future(_run_agent_for_chat(str(chat_id), context))
+
+
+# ---------- /watch & /read (Watchlist) ----------
+MEDIA_TYPE_MAP = {"watch": "Movie", "read": "Book"}
+
+
+async def watchlist_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /watch <title> and /read <title> commands."""
+    command = update.message.text.split()[0].lstrip("/").lower()  # "watch" or "read"
+    media_type = MEDIA_TYPE_MAP.get(command, "Other")
+
+    title = " ".join(context.args).strip() if context.args else ""
+    if not title:
+        emoji = "\U0001F3AC" if command == "watch" else "\U0001F4D6"
+        await update.message.reply_text(
+            f"{emoji} Usage: /{command} <title>\n"
+            f"Example: /{command} The Bear"
+        )
+        return
+
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    now = datetime.now(timezone.utc).isoformat()
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO watchlist (chat_id, title, media_type, added_by_id, added_by_username, added_at)
+            VALUES (?, ?, ?, ?, ?, ?);
+            """,
+            (chat_id, title, media_type, user.id, user.username or user.first_name, now),
+        )
+
+    emoji = "\U0001F3AC" if media_type == "Movie" else "\U0001F4D6"
+    await update.message.reply_text(
+        f"{emoji} Added to the list!\n"
+        f"**{title}** ({media_type})\n"
+        f"Added by @{user.username or user.first_name}",
+        parse_mode="Markdown",
+    )
+
+
+# ---------- /rate (Watchlist rating) ----------
+async def watchlist_rate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /rate <id> <1-5> — rate a watchlist item."""
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "\u2B50 Usage: /rate <id> <1-5>\n"
+            "Example: /rate 3 5\n\n"
+            "Use /watchlist to see item IDs."
+        )
+        return
+
+    try:
+        item_id = int(context.args[0])
+        rating = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("\u274C ID and rating must be numbers.")
+        return
+
+    if rating < 1 or rating > 5:
+        await update.message.reply_text("\u274C Rating must be 1\u20135.")
+        return
+
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    now = datetime.now(timezone.utc).isoformat()
+
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT title FROM watchlist WHERE id = ? AND chat_id = ?;",
+            (item_id, chat_id),
+        ).fetchone()
+        if not row:
+            await update.message.reply_text("\u274C Item not found in this chat.")
+            return
+
+        conn.execute(
+            """
+            INSERT INTO watchlist_completions (item_id, user_id, completed_at, rating)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(item_id, user_id) DO UPDATE SET rating = excluded.rating, completed_at = excluded.completed_at;
+            """,
+            (item_id, user.id, now, rating),
+        )
+
+    stars = "\u2B50" * rating
+    await update.message.reply_text(
+        f"{stars} Rated **{row[0]}** {rating}/5!",
+        parse_mode="Markdown",
+    )
+
+
+# ---------- /watchlist (show list with IDs) ----------
+async def watchlist_show(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the watchlist with item IDs for rating."""
+    chat_id = update.effective_chat.id
+
+    with sqlite3.connect(DB_PATH) as conn:
+        items = conn.execute(
+            "SELECT id, title, media_type FROM watchlist WHERE chat_id = ? ORDER BY added_at DESC;",
+            (chat_id,),
+        ).fetchall()
+
+    if not items:
+        await update.message.reply_text("\U0001F4DA No items on the watch/read list yet.\nUse /watch or /read to add one!")
+        return
+
+    type_icons = {"Movie": "\U0001F3AC", "Book": "\U0001F4D6", "Show": "\U0001F4FA",
+                  "Podcast": "\U0001F3A7", "Article": "\U0001F4F0", "Other": "\U0001F517"}
+    lines = ["\U0001F4DA **Watch/Read List**\n"]
+    for item_id, title, media_type in items:
+        icon = type_icons.get(media_type, "\U0001F517")
+        lines.append(f"`{item_id}.` {icon} {title}")
+    lines.append("\nRate with: /rate <id> <1\u20135>")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ---------- /help ----------
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show available commands."""
+    await update.message.reply_text(
+        "\U0001F916 **OTLCBot Commands**\n\n"
+        "\U0001F4CA /dashboard \u2014 Open the OTLC Dashboard\n"
+        "\U0001F4CA /stats \u2014 Message stats for this chat\n"
+        "\n"
+        "\U0001F3B2 /bet \u2014 Create a new bet\n"
+        "\U0001F3B2 /bets \u2014 Show open bets\n"
+        "\U0001F3B2 /settlebet <id> <winner> \u2014 Settle a bet\n"
+        "\n"
+        "\U0001F3AC /watch <title> \u2014 Add a movie/show to watch\n"
+        "\U0001F4D6 /read <title> \u2014 Add a book to read\n"
+        "\U0001F4DA /watchlist \u2014 Show list with IDs\n"
+        "\u2B50 /rate <id> <1\u20135> \u2014 Rate an item\n"
+        "\n"
+        "\U0001F5BC /gallery \u2014 Browse weekly cartoons\n"
+        "\U0001F194 /chatid \u2014 Show this chat's ID",
+        parse_mode="Markdown",
+    )
+
+
+async def _run_agent_for_chat(chat_id_str: str, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Run the agent loop for a single chat (called from message-count trigger)."""
+    try:
+        from agent import run_agent_loop
+        await run_agent_loop([chat_id_str], context.bot)
+    except Exception as e:
+        print(f"Agent loop failed for chat {chat_id_str}: {e}")
+
 
 def main() -> None:
     if not TOKEN:
@@ -425,10 +649,21 @@ def main() -> None:
     app.add_handler(CommandHandler("settlebet", settlebet))
     app.add_handler(CommandHandler("gallery", gallery))
     app.add_handler(CommandHandler("dashboard", dashboard))
+    app.add_handler(CommandHandler("watch", watchlist_add))
+    app.add_handler(CommandHandler("read", watchlist_add))
+    app.add_handler(CommandHandler("rate", watchlist_rate))
+    app.add_handler(CommandHandler("watchlist", watchlist_show))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(gallery_callback, pattern=r"^gallery:"))
-    app.add_handler(MessageHandler(filters.TEXT | filters.Caption, log_message))
+    app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, log_message))
 
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as exc:
+        if "Conflict" in type(exc).__name__ or "terminated by other getUpdates" in str(exc):
+            print("Conflict: another bot instance detected. Exiting cleanly (no restart).")
+            sys.exit(0)
+        raise
 
 
 if __name__ == "__main__":

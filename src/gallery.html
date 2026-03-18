@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-  <title>Weekly Cartoons</title>
+  <title>OTLC Dashboard</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -20,12 +20,15 @@
       position: sticky;
       top: 0;
       background: var(--tg-theme-bg-color, #ffffff);
-      border-bottom: 1px solid var(--tg-theme-hint-color, #ccc);
-      padding: 12px 16px;
+      padding: 12px 16px 0;
+      z-index: 10;
+    }
+
+    #header .top-row {
       display: flex;
       align-items: center;
       gap: 8px;
-      z-index: 10;
+      margin-bottom: 10px;
     }
 
     #header h1 {
@@ -39,6 +42,30 @@
       margin-left: auto;
     }
 
+    .tab-bar {
+      display: flex;
+      border-bottom: 1px solid var(--tg-theme-hint-color, #ccc);
+    }
+
+    .tab-bar button {
+      flex: 1;
+      padding: 8px 0;
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--tg-theme-hint-color, #888);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .tab-bar button.active {
+      color: var(--tg-theme-link-color, #3390ec);
+      border-bottom-color: var(--tg-theme-link-color, #3390ec);
+    }
+
+    /* Gallery styles */
     #gallery {
       display: flex;
       flex-direction: column;
@@ -78,14 +105,216 @@
       line-height: 1.4;
     }
 
-    #state {
+    /* Profile card styles */
+    .profile-card {
+      margin: 12px 16px;
+      padding: 16px;
+      border: 1px solid var(--tg-theme-hint-color, #ddd);
+      border-radius: 8px;
+      background: var(--tg-theme-secondary-bg-color, #f8f8f8);
+    }
+
+    .profile-card .subject {
+      font-weight: 700;
+      font-size: 15px;
+      color: var(--tg-theme-link-color, #3390ec);
+      margin-bottom: 10px;
+    }
+
+    .profile-card .case-text {
+      white-space: pre-wrap;
+      font-family: "Courier New", Courier, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--tg-theme-text-color, #222);
+    }
+
+    .profile-card .meta-info {
+      margin-top: 10px;
+      font-size: 11px;
+      color: var(--tg-theme-hint-color, #999);
+    }
+
+    /* Bet card styles */
+    .bet-card {
+      margin: 12px 16px;
+      padding: 14px 16px;
+      border: 1px solid var(--tg-theme-hint-color, #ddd);
+      border-radius: 8px;
+      background: var(--tg-theme-secondary-bg-color, #f8f8f8);
+      border-left: 4px solid #4caf50;
+    }
+
+    .bet-card.settled {
+      border-left-color: var(--tg-theme-hint-color, #aaa);
+      opacity: 0.75;
+    }
+
+    .bet-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .bet-id {
+      font-weight: 700;
+      font-size: 13px;
+      color: var(--tg-theme-link-color, #3390ec);
+    }
+
+    .bet-creator {
+      font-size: 12px;
+      color: var(--tg-theme-hint-color, #888);
+    }
+
+    .bet-desc {
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+
+    .bet-details {
+      font-size: 12px;
+      color: var(--tg-theme-hint-color, #888);
+      line-height: 1.5;
+    }
+
+    .bet-result {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--tg-theme-hint-color, #e5e5e5);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    /* Watchlist styles */
+    #watchlist-form {
+      display: flex;
+      gap: 8px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--tg-theme-hint-color, #e5e5e5);
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    #watchlist-form input[type="text"] {
+      flex: 1;
+      min-width: 120px;
+      padding: 8px 10px;
+      border: 1px solid var(--tg-theme-hint-color, #ccc);
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      background: var(--tg-theme-bg-color, #fff);
+      color: var(--tg-theme-text-color, #000);
+    }
+
+    #watchlist-form select {
+      padding: 8px 6px;
+      border: 1px solid var(--tg-theme-hint-color, #ccc);
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: inherit;
+      background: var(--tg-theme-bg-color, #fff);
+      color: var(--tg-theme-text-color, #000);
+    }
+
+    #watchlist-form button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      background: var(--tg-theme-button-color, #3390ec);
+      color: var(--tg-theme-button-text-color, #fff);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    #watchlist-form button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .wl-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--tg-theme-hint-color, #e5e5e5);
+    }
+
+    .wl-icon {
+      font-size: 22px;
+      flex-shrink: 0;
+      width: 30px;
+      text-align: center;
+    }
+
+    .wl-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .wl-title {
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 1.3;
+    }
+
+    .wl-meta {
+      font-size: 12px;
+      color: var(--tg-theme-hint-color, #888);
+      margin-top: 2px;
+    }
+
+    .wl-stars {
+      flex-shrink: 0;
+      display: flex;
+      gap: 2px;
+      align-self: center;
+    }
+
+    .wl-stars .star {
+      font-size: 20px;
+      cursor: pointer;
+      color: var(--tg-theme-hint-color, #ccc);
+      transition: color 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .wl-stars .star.filled {
+      color: #f5a623;
+    }
+
+    .wl-stars .star:hover {
+      color: #f5a623;
+    }
+
+    .wl-avg-rating {
+      font-size: 12px;
+      color: #f5a623;
+      font-weight: 600;
+      margin-top: 2px;
+    }
+
+    .wl-completions {
+      font-size: 11px;
+      color: var(--tg-theme-hint-color, #999);
+      margin-top: 2px;
+    }
+
+    /* State messages */
+    .state-msg {
       text-align: center;
       padding: 48px 24px;
       color: var(--tg-theme-hint-color, #888);
       font-size: 15px;
     }
 
-    #state .icon {
+    .state-msg .icon {
       font-size: 40px;
       margin-bottom: 12px;
     }
@@ -93,11 +322,23 @@
 </head>
 <body>
   <div id="header">
-    <h1>🖼️ Weekly Cartoons</h1>
-    <span class="count" id="count"></span>
+    <div class="top-row">
+      <h1>OTLC Dashboard</h1>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="tab-bar">
+      <button id="tab-gallery" class="active" onclick="switchTab('gallery')">Gallery</button>
+      <button id="tab-profiles" onclick="switchTab('profiles')">User Profiles</button>
+      <button id="tab-bets" onclick="switchTab('bets')">Bets</button>
+      <button id="tab-watchlist" onclick="switchTab('watchlist')">Watch/Read</button>
+    </div>
   </div>
+
   <div id="gallery"></div>
-  <div id="state"><div class="icon">⏳</div>Loading...</div>
+  <div id="profiles" style="display:none"></div>
+  <div id="bets" style="display:none"></div>
+  <div id="watchlist" style="display:none"></div>
+  <div id="state" class="state-msg"><div class="icon">&#x23F3;</div>Loading...</div>
 
   <script>
     const tg = window.Telegram.WebApp;
@@ -105,64 +346,404 @@
     tg.expand();
 
     const chatId = new URLSearchParams(location.search).get('chat_id');
-    const gallery = document.getElementById('gallery');
-    const state = document.getElementById('state');
+    const galleryEl = document.getElementById('gallery');
+    const profilesEl = document.getElementById('profiles');
+    const betsEl = document.getElementById('bets');
+    const watchlistEl = document.getElementById('watchlist');
+    const stateEl = document.getElementById('state');
     const countEl = document.getElementById('count');
 
+    const tgUser = tg.initDataUnsafe?.user;
+
+    let profilesLoaded = false;
+    let betsLoaded = false;
+    let watchlistLoaded = false;
+    let galleryCount = 0;
+    let profilesCount = 0;
+    let betsCount = 0;
+    let watchlistCount = 0;
+
+    const TABS = ['gallery', 'profiles', 'bets', 'watchlist'];
+
+    function switchTab(tab) {
+      TABS.forEach(t => {
+        document.getElementById('tab-' + t).classList.toggle('active', tab === t);
+        document.getElementById(t).style.display = tab === t ? '' : 'none';
+      });
+      stateEl.style.display = 'none';
+
+      if (tab === 'profiles' && !profilesLoaded) loadProfiles();
+      if (tab === 'bets' && !betsLoaded) loadBets();
+      if (tab === 'watchlist' && !watchlistLoaded) loadWatchlist();
+
+      updateCount(tab);
+    }
+
+    function updateCount(tab) {
+      if (tab === 'gallery') {
+        countEl.textContent = galleryCount ? galleryCount + ' week' + (galleryCount !== 1 ? 's' : '') : '';
+      } else if (tab === 'profiles') {
+        countEl.textContent = profilesCount ? profilesCount + ' file' + (profilesCount !== 1 ? 's' : '') : '';
+      } else if (tab === 'bets') {
+        countEl.textContent = betsCount ? betsCount + ' bet' + (betsCount !== 1 ? 's' : '') : '';
+      } else if (tab === 'watchlist') {
+        countEl.textContent = watchlistCount ? watchlistCount + ' item' + (watchlistCount !== 1 ? 's' : '') : '';
+      }
+    }
+
+    /* ── Gallery (loads on page open) ── */
     if (!chatId) {
-      state.innerHTML = '<div class="icon">⚠️</div>No chat ID provided.';
+      stateEl.innerHTML = '<div class="icon">&#x26A0;&#xFE0F;</div>No chat ID provided.';
     } else {
-      fetch(`/api/images/${chatId}`)
-        .then(r => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      fetch('/api/images/' + chatId)
+        .then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
           return r.json();
         })
-        .then(images => {
-          state.style.display = 'none';
+        .then(function(images) {
+          stateEl.style.display = 'none';
 
           if (!images.length) {
-            state.style.display = '';
-            state.innerHTML = '<div class="icon">🎨</div>No cartoons yet!<br>They appear after each weekly report.';
+            stateEl.style.display = '';
+            stateEl.innerHTML = '<div class="icon">&#x1F3A8;</div>No cartoons yet!<br>They appear after each weekly report.';
             return;
           }
 
-          countEl.textContent = `${images.length} week${images.length !== 1 ? 's' : ''}`;
+          galleryCount = images.length;
+          updateCount('gallery');
 
-          images.forEach(img => {
-            const card = document.createElement('div');
+          images.forEach(function(img) {
+            var card = document.createElement('div');
             card.className = 'card';
 
-            const image = document.createElement('img');
+            var image = document.createElement('img');
             if (img.url) {
               image.src = img.url;
-              image.alt = img.prompt || `Week of ${img.week_of}`;
+              image.alt = img.prompt || 'Week of ' + img.week_of;
               image.loading = 'lazy';
-              image.addEventListener('load', () => image.classList.add('loaded'));
-              image.addEventListener('error', () => {
-                image.style.display = 'none';
-              });
+              image.addEventListener('load', function() { image.classList.add('loaded'); });
+              image.addEventListener('error', function() { image.style.display = 'none'; });
             } else {
               image.style.display = 'none';
             }
 
-            const meta = document.createElement('div');
+            var meta = document.createElement('div');
             meta.className = 'meta';
-            meta.innerHTML = `
-              <div class="week">Week of ${img.week_of}</div>
-              ${img.prompt ? `<div class="prompt">${escHtml(img.prompt)}</div>` : ''}
-            `;
+            meta.innerHTML = '<div class="week">Week of ' + img.week_of + '</div>' +
+              (img.prompt ? '<div class="prompt">' + escHtml(img.prompt) + '</div>' : '');
 
             card.appendChild(image);
             card.appendChild(meta);
-            gallery.appendChild(card);
+            galleryEl.appendChild(card);
           });
         })
-        .catch(err => {
-          state.innerHTML = `<div class="icon">⚠️</div>Failed to load.<br><small>${escHtml(err.message)}</small>`;
+        .catch(function(err) {
+          stateEl.innerHTML = '<div class="icon">&#x26A0;&#xFE0F;</div>Failed to load.<br><small>' + escHtml(err.message) + '</small>';
         });
     }
 
+    /* ── User Profiles ── */
+    function loadProfiles() {
+      profilesEl.innerHTML = '<div class="state-msg"><div class="icon">&#x23F3;</div>Loading profiles...</div>';
+      fetch('/api/profiles/' + chatId)
+        .then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function(profiles) {
+          profilesLoaded = true;
+          profilesEl.innerHTML = '';
+
+          if (!profiles.length) {
+            profilesEl.innerHTML = '<div class="state-msg"><div class="icon">&#x1F4CB;</div>No profiles yet.<br>They appear after each weekly report.</div>';
+            return;
+          }
+
+          profilesCount = profiles.length;
+          updateCount('profiles');
+
+          profiles.forEach(function(p) {
+            var card = document.createElement('div');
+            card.className = 'profile-card';
+            card.innerHTML =
+              '<div class="subject">@' + escHtml(p.username) + '</div>' +
+              '<div class="case-text">' + escHtml(p.case_file) + '</div>' +
+              '<div class="meta-info">File v' + p.version + ' \u00B7 Updated ' + p.updated_at.split('T')[0] + '</div>';
+            profilesEl.appendChild(card);
+          });
+        })
+        .catch(function(err) {
+          profilesEl.innerHTML = '<div class="state-msg"><div class="icon">&#x26A0;&#xFE0F;</div>Failed to load profiles.<br><small>' + escHtml(err.message) + '</small></div>';
+        });
+    }
+
+    /* ── Bets ── */
+    function loadBets() {
+      betsEl.innerHTML = '<div class="state-msg"><div class="icon">&#x23F3;</div>Loading bets...</div>';
+      fetch('/api/bets/' + chatId)
+        .then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function(bets) {
+          betsLoaded = true;
+          betsEl.innerHTML = '';
+
+          if (!bets.length) {
+            betsEl.innerHTML = '<div class="state-msg"><div class="icon">&#x1F3B2;</div>No bets yet.<br>Use /bet in chat to create one.</div>';
+            return;
+          }
+
+          betsCount = bets.length;
+          updateCount('bets');
+
+          bets.forEach(function(b) {
+            var isSettled = !!b.settled_at;
+            var card = document.createElement('div');
+            card.className = 'bet-card' + (isSettled ? ' settled' : '');
+
+            var statusLabel = isSettled ? '&#x2705; Settled' : '&#x1F7E2; Open';
+            var dateStr = b.created_at ? b.created_at.split('T')[0] : '';
+
+            var html =
+              '<div class="bet-header">' +
+                '<span class="bet-id">#' + b.id + ' ' + statusLabel + '</span>' +
+                '<span class="bet-creator">' + escHtml(b.created_by_name) + '</span>' +
+              '</div>' +
+              '<div class="bet-desc">' + escHtml(b.description) + '</div>' +
+              '<div class="bet-details">' +
+                '&#x1F4C5; Settles: ' + escHtml(b.settlement) + '<br>' +
+                '&#x1F4B0; Wager: ' + escHtml(b.wager) + '<br>' +
+                '&#x1F4C6; Created: ' + dateStr +
+              '</div>';
+
+            if (isSettled) {
+              var settledDate = b.settled_at ? b.settled_at.split('T')[0] : '';
+              html += '<div class="bet-result">&#x1F3C6; Winner: ' + escHtml(b.winner || 'Unknown') +
+                ' \u00B7 ' + settledDate + '</div>';
+            }
+
+            card.innerHTML = html;
+            betsEl.appendChild(card);
+          });
+        })
+        .catch(function(err) {
+          betsEl.innerHTML = '<div class="state-msg"><div class="icon">&#x26A0;&#xFE0F;</div>Failed to load bets.<br><small>' + escHtml(err.message) + '</small></div>';
+        });
+    }
+
+    /* ── Watch/Read List ── */
+    var MEDIA_ICONS = {
+      'Movie': '&#x1F3AC;', 'Book': '&#x1F4D6;', 'Show': '&#x1F4FA;',
+      'Podcast': '&#x1F3A7;', 'Article': '&#x1F4F0;', 'Other': '&#x1F517;'
+    };
+
+    var watchlistItems = [];
+
+    function loadWatchlist() {
+      watchlistEl.innerHTML = '';
+      renderWatchlistForm();
+      var listEl = document.createElement('div');
+      listEl.id = 'watchlist-items';
+      listEl.innerHTML = '<div class="state-msg"><div class="icon">&#x23F3;</div>Loading list...</div>';
+      watchlistEl.appendChild(listEl);
+
+      fetch('/api/watchlist/' + chatId)
+        .then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function(items) {
+          watchlistLoaded = true;
+          watchlistItems = items;
+          watchlistCount = items.length;
+          updateCount('watchlist');
+          renderWatchlistItems();
+        })
+        .catch(function(err) {
+          listEl.innerHTML = '<div class="state-msg"><div class="icon">&#x26A0;&#xFE0F;</div>Failed to load list.<br><small>' + escHtml(err.message) + '</small></div>';
+        });
+    }
+
+    function renderWatchlistForm() {
+      var form = document.createElement('div');
+      form.id = 'watchlist-form';
+
+      if (!tgUser) {
+        form.innerHTML = '<span style="font-size:13px;color:var(--tg-theme-hint-color,#888);">Use <b>/watch Movie Name</b> or <b>/read Book Title</b> in the group chat to add items.</span>';
+        watchlistEl.appendChild(form);
+        return;
+      }
+
+      form.innerHTML =
+        '<input type="text" id="wl-title" placeholder="Title..." maxlength="200">' +
+        '<select id="wl-type">' +
+          '<option>Movie</option><option>Book</option><option>Show</option>' +
+          '<option>Podcast</option><option>Article</option><option>Other</option>' +
+        '</select>' +
+        '<button onclick="addWatchlistItem()">Add</button>';
+      watchlistEl.appendChild(form);
+
+      // Allow Enter key to submit
+      setTimeout(function() {
+        var input = document.getElementById('wl-title');
+        if (input) {
+          input.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') addWatchlistItem();
+          });
+        }
+      }, 0);
+    }
+
+    function renderWatchlistItems() {
+      var listEl = document.getElementById('watchlist-items');
+      listEl.innerHTML = '';
+
+      if (!watchlistItems.length) {
+        listEl.innerHTML = '<div class="state-msg"><div class="icon">&#x1F4DA;</div>No items yet.<br>Use <b>/watch</b> or <b>/read</b> in chat to add!</div>';
+        return;
+      }
+
+      watchlistItems.forEach(function(item) {
+        listEl.appendChild(createWatchlistCard(item));
+      });
+    }
+
+    function createWatchlistCard(item) {
+      var myId = tgUser ? tgUser.id : null;
+      var myCompletion = item.completed_by.find(function(c) { return c.user_id === myId; });
+      var myRating = myCompletion ? myCompletion.rating : 0;
+
+      var el = document.createElement('div');
+      el.dataset.itemId = item.id;
+
+      var icon = MEDIA_ICONS[item.media_type] || '&#x1F517;';
+      var dateStr = item.added_at ? item.added_at.split('T')[0] : '';
+
+      // Calculate average rating from all completions that have a rating
+      var ratings = item.completed_by.filter(function(c) { return c.rating; });
+      var avgRating = ratings.length
+        ? (ratings.reduce(function(sum, c) { return sum + c.rating; }, 0) / ratings.length)
+        : 0;
+      var ratingText = avgRating
+        ? '<div class="wl-avg-rating">' + '\u2605'.repeat(Math.round(avgRating)) + ' ' + avgRating.toFixed(1) + ' (' + ratings.length + ')</div>'
+        : '';
+
+      el.className = 'wl-item';
+      el.innerHTML =
+        '<div class="wl-icon">' + icon + '</div>' +
+        '<div class="wl-info">' +
+          '<div class="wl-title">' + escHtml(item.title) + '</div>' +
+          '<div class="wl-meta">' + escHtml(item.media_type) + ' \u00B7 added by ' + escHtml(item.added_by_username) + ' \u00B7 ' + dateStr + '</div>' +
+          ratingText +
+        '</div>';
+
+      if (tgUser) {
+        var starsDiv = document.createElement('div');
+        starsDiv.className = 'wl-stars';
+        for (var i = 1; i <= 5; i++) {
+          (function(starVal) {
+            var star = document.createElement('span');
+            star.className = 'star' + (starVal <= myRating ? ' filled' : '');
+            star.textContent = starVal <= myRating ? '\u2605' : '\u2606';
+            star.onclick = function() { submitRating(item.id, starVal, starsDiv, el); };
+            starsDiv.appendChild(star);
+          })(i);
+        }
+        el.appendChild(starsDiv);
+      }
+
+      return el;
+    }
+
+    function addWatchlistItem() {
+      var titleInput = document.getElementById('wl-title');
+      var typeSelect = document.getElementById('wl-type');
+      var title = titleInput.value.trim();
+      if (!title) return;
+
+      var btn = document.querySelector('#watchlist-form button');
+      btn.disabled = true;
+
+      fetch('/api/watchlist/' + chatId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title,
+          media_type: typeSelect.value,
+          user_id: tgUser.id,
+          username: tgUser.username || tgUser.first_name || ('User ' + tgUser.id)
+        })
+      })
+      .then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Failed'); });
+        return r.json();
+      })
+      .then(function(newItem) {
+        watchlistItems.unshift(newItem);
+        watchlistCount = watchlistItems.length;
+        updateCount('watchlist');
+        renderWatchlistItems();
+        titleInput.value = '';
+        btn.disabled = false;
+        titleInput.focus();
+      })
+      .catch(function(err) {
+        alert('Error: ' + err.message);
+        btn.disabled = false;
+      });
+    }
+
+    function submitRating(itemId, rating, starsDiv, el) {
+      fetch('/api/watchlist/' + chatId + '/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item_id: itemId, user_id: tgUser.id, rating: rating })
+      })
+      .then(function(r) {
+        if (!r.ok) throw new Error('Failed');
+
+        // Update stars UI
+        var stars = starsDiv.querySelectorAll('.star');
+        stars.forEach(function(s, idx) {
+          if (idx < rating) {
+            s.className = 'star filled';
+            s.textContent = '\u2605';
+          } else {
+            s.className = 'star';
+            s.textContent = '\u2606';
+          }
+        });
+
+        // Update local data
+        var item = watchlistItems.find(function(i) { return i.id === itemId; });
+        if (item) {
+          var existing = item.completed_by.find(function(c) { return c.user_id === tgUser.id; });
+          if (existing) {
+            existing.rating = rating;
+          } else {
+            item.completed_by.push({ user_id: tgUser.id, completed_at: new Date().toISOString(), rating: rating });
+          }
+          // Update average rating display
+          var ratings = item.completed_by.filter(function(c) { return c.rating; });
+          var avg = ratings.reduce(function(sum, c) { return sum + c.rating; }, 0) / ratings.length;
+          var avgEl = el.querySelector('.wl-avg-rating');
+          var text = '\u2605'.repeat(Math.round(avg)) + ' ' + avg.toFixed(1) + ' (' + ratings.length + ')';
+          if (avgEl) {
+            avgEl.innerHTML = text;
+          } else {
+            var newAvg = document.createElement('div');
+            newAvg.className = 'wl-avg-rating';
+            newAvg.innerHTML = text;
+            el.querySelector('.wl-info').appendChild(newAvg);
+          }
+        }
+      })
+      .catch(function() { /* silently fail */ });
+    }
+
     function escHtml(s) {
+      if (!s) return '';
       return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
   </script>

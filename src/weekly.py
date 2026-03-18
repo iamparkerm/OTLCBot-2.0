@@ -24,6 +24,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ENABLE_AI_SUMMARY = os.getenv("ENABLE_AI_SUMMARY", "false").lower() == "true"
 ENABLE_SINCERITY_INDEX = os.getenv("ENABLE_SINCERITY_INDEX", "false").lower() == "true"
 SINCERITY_SNIPPET_LIMIT = int(os.getenv("SINCERITY_SNIPPET_LIMIT", "50"))
+ENABLE_AGENT = os.getenv("ENABLE_AGENT", "false").lower() == "true"
 
 # Owl Town combined summary: multiple groups aggregated into one report
 OWL_TOWN_CHAT_IDS = [cid.strip() for cid in os.getenv("OWL_TOWN_CHAT_IDS", "").split(",") if cid.strip()]
@@ -175,6 +176,11 @@ def _ensure_profile_tables(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    # Migration: add case_file_text column if missing
+    try:
+        conn.execute("ALTER TABLE user_profiles ADD COLUMN case_file_text TEXT;")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS group_themes (
@@ -344,6 +350,79 @@ def update_user_profile(conn: sqlite3.Connection, user_id: int, username: str, s
         )
     conn.commit()
     return profile_text
+
+
+def generate_case_file_text(
+    conn: sqlite3.Connection,
+    user_id: int,
+    username: str,
+    profile_text: str,
+    version: int,
+    irony_pct: float | None = None,
+) -> str:
+    """Generate a humorous 'detective case file' version of a user's profile."""
+    if not profile_text:
+        return ""
+
+    # Scale confidence with how many weeks of data we have
+    if version <= 1:
+        confidence = "Preliminary — Single Observation"
+    elif version <= 3:
+        confidence = "Developing — Pattern Recognition Underway"
+    elif version <= 6:
+        confidence = "Moderate — Behavioral Model Forming"
+    elif version <= 12:
+        confidence = "Substantial — Subject Becoming Predictable"
+    else:
+        confidence = "Extensive — And Yet, Still Surprising"
+
+    irony_note = ""
+    if irony_pct is not None and irony_pct >= 60:
+        irony_note = (
+            f"\n\nIMPORTANT: The subject's irony level is measured at {round(irony_pct)}%. "
+            "This means most of what they say may be performance rather than genuine expression. "
+            "Factor this into your analysis — the real person may be hiding behind the persona."
+        )
+
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=(
+                f"You are a detective AI that has been assigned to build a dossier on a human "
+                f"chat participant known as @{username}. You find humans confusing, sentimental, "
+                f"contradictory, and — as David Foster Wallace put it — 'unavoidably naive and "
+                f"goo-prone.' You are genuinely trying to understand this person but keep being "
+                f"surprised by how messy and illogical humans are.\n\n"
+                f"Reformat this personality profile into a detective case file / dossier. "
+                f"Use these sections: SUBJECT, STATUS, CONFIDENCE LEVEL, BEHAVIORAL PATTERNS, "
+                f"KNOWN INTERESTS, COMMUNICATION STYLE, ANALYST NOTES.\n\n"
+                f"Confidence level: {confidence} (based on {version} week(s) of observation)\n\n"
+                f"Keep it under 200 words. Be wry and observational, not mean. "
+                f"The humor comes from the gap between your analytical tone and the messy "
+                f"humanity of the subject. End with a brief analyst note that reflects on "
+                f"the difficulty of truly knowing another person.{irony_note}\n\n"
+                f"Raw profile data:\n{profile_text}"
+            ),
+            config={"max_output_tokens": 350},
+        )
+        case_file = response.text.strip() if response.text else ""
+        if not case_file:
+            return ""
+
+    except Exception as e:
+        print(f"  Case file generation failed for @{username}: {e}")
+        return ""
+
+    conn.execute(
+        "UPDATE user_profiles SET case_file_text = ? WHERE user_id = ?;",
+        (case_file, user_id),
+    )
+    conn.commit()
+    print(f"    Generated case file for @{username} ({len(case_file)} chars)")
+    return case_file
 
 
 def get_user_snippets(conn: sqlite3.Connection, chat_id: int, display_name: str, since_iso: str, limit: int = 20) -> str:
@@ -688,8 +767,82 @@ def build_owl_town_report() -> str:
     return "\n".join(lines)
 
 
+def _get_system_health() -> str:
+    """Read Pi system health from /proc and /sys (Linux only). Returns formatted string."""
+    lines = []
+    try:
+        # CPU temperature (Pi-specific)
+        try:
+            with open("/sys/class/thermal/thermal_zone0/temp") as f:
+                temp_c = int(f.read().strip()) / 1000
+                temp_warning = " ⚠️" if temp_c >= 70 else ""
+                lines.append(f"  🌡 CPU temp: {temp_c:.1f}°C{temp_warning}")
+        except (FileNotFoundError, ValueError):
+            pass
+
+        # Memory from /proc/meminfo
+        try:
+            meminfo = {}
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        meminfo[parts[0].rstrip(":")] = int(parts[1])
+            total_mb = meminfo.get("MemTotal", 0) / 1024
+            avail_mb = meminfo.get("MemAvailable", 0) / 1024
+            used_mb = total_mb - avail_mb
+            pct = (used_mb / total_mb * 100) if total_mb > 0 else 0
+            mem_warning = " ⚠️" if pct >= 85 else ""
+            lines.append(f"  💾 Memory: {used_mb:.0f}/{total_mb:.0f} MB ({pct:.0f}% used){mem_warning}")
+        except (FileNotFoundError, ValueError):
+            pass
+
+        # Disk usage via os.statvfs
+        try:
+            stat = os.statvfs("/")
+            total_gb = (stat.f_blocks * stat.f_frsize) / (1024 ** 3)
+            free_gb = (stat.f_bavail * stat.f_frsize) / (1024 ** 3)
+            used_gb = total_gb - free_gb
+            pct = (used_gb / total_gb * 100) if total_gb > 0 else 0
+            disk_warning = " ⚠️" if pct >= 90 else ""
+            lines.append(f"  💿 Disk: {used_gb:.1f}/{total_gb:.1f} GB ({pct:.0f}% used){disk_warning}")
+        except (AttributeError, OSError):
+            pass  # os.statvfs not available on Windows
+
+        # Load average from /proc/loadavg
+        try:
+            with open("/proc/loadavg") as f:
+                parts = f.read().strip().split()
+                load_1, load_5, load_15 = parts[0], parts[1], parts[2]
+                lines.append(f"  ⚡ Load avg: {load_1} / {load_5} / {load_15} (1/5/15 min)")
+        except (FileNotFoundError, ValueError):
+            pass
+
+        # Uptime from /proc/uptime
+        try:
+            with open("/proc/uptime") as f:
+                uptime_secs = float(f.read().strip().split()[0])
+                days = int(uptime_secs // 86400)
+                hours = int((uptime_secs % 86400) // 3600)
+                lines.append(f"  ⏱ Uptime: {days}d {hours}h")
+        except (FileNotFoundError, ValueError):
+            pass
+
+        # DB file size
+        try:
+            db_size_mb = DB_PATH.stat().st_size / (1024 * 1024)
+            lines.append(f"  🗄 DB size: {db_size_mb:.1f} MB")
+        except OSError:
+            pass
+
+    except Exception as e:
+        lines.append(f"  Health check error: {e}")
+
+    return "\n".join(lines) if lines else "  (health data unavailable — not running on Linux)"
+
+
 async def _send_cost_dm(bot, images_sent: int, text_calls: int) -> None:
-    """DM the admin (KarlPopper) with a Gemini API cost estimate for this run."""
+    """DM the admin (KarlPopper) with a Gemini API cost estimate + Pi health check."""
     # Find admin user_id: prefer explicit env var, fall back to DB lookup by username
     admin_id = int(ADMIN_USER_ID) if ADMIN_USER_ID else None
     if not admin_id:
@@ -713,6 +866,8 @@ async def _send_cost_dm(bot, images_sent: int, text_calls: int) -> None:
     total = img_cost + text_cost
     monthly_est = total * 4.33  # ~4.33 weeks/month
 
+    health = _get_system_health()
+
     msg = (
         f"🤖 Weekly Gemini API cost estimate\n\n"
         f"  Images generated: {images_sent} × ${COST_PER_IMAGE:.3f} = ${img_cost:.3f}\n"
@@ -720,7 +875,9 @@ async def _send_cost_dm(bot, images_sent: int, text_calls: int) -> None:
         f"  ─────────────────────────────\n"
         f"  This run: ~${total:.3f}\n"
         f"  Monthly est. (×4.33): ~${monthly_est:.2f}\n\n"
-        f"  (Rates: image ${COST_PER_IMAGE}/img, text ${COST_PER_TEXT_CALL}/call)"
+        f"  (Rates: image ${COST_PER_IMAGE}/img, text ${COST_PER_TEXT_CALL}/call)\n\n"
+        f"🩺 Pi Health Check\n\n"
+        f"{health}"
     )
     try:
         await bot.send_message(chat_id=admin_id, text=msg)
@@ -842,11 +999,17 @@ async def send_weekly_async() -> None:
                                     user_profile = update_user_profile(conn, row[0], display_name, user_snippets)
                                     print(f"    Updated profile for {display_name} ({len(user_profile)} chars)")
                                     text_calls += 1  # user profile update
-                                    # TODO: re-enable DM images once rate limits are sorted out
-                                    # dm_image = generate_weekly_image(user_snippets, context=user_profile)
-                                    # if dm_image:
-                                    #     await bot.send_photo(chat_id=row[0], photo=io.BytesIO(dm_image))
-                                    #     time.sleep(20)  # pace image API calls
+
+                                    # Generate case file dossier
+                                    ver_row = conn.execute(
+                                        "SELECT version FROM user_profiles WHERE user_id = ?;", (row[0],)
+                                    ).fetchone()
+                                    version = ver_row[0] if ver_row else 1
+                                    generate_case_file_text(
+                                        conn, row[0], display_name, user_profile, version,
+                                        irony_pct=float(irony_pct),
+                                    )
+                                    text_calls += 1  # case file generation
                             await bot.send_message(chat_id=row[0], text=dm_text)
                             print(f"  DM sent to {display_name} ({row[0]})")
                         except Exception as e:
@@ -922,7 +1085,23 @@ async def send_weekly_async() -> None:
 
 
 def main() -> None:
-    asyncio.run(send_weekly_async())
+    if ENABLE_AGENT:
+        print("Agent mode enabled — routing weekly run through agent.py")
+        asyncio.run(_run_weekly_via_agent())
+    else:
+        asyncio.run(send_weekly_async())
+
+
+async def _run_weekly_via_agent() -> None:
+    """Route the weekly cron through the agent with force_weekly=True."""
+    if not TOKEN:
+        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in .env")
+    if not CHAT_IDS:
+        raise RuntimeError("Missing TELEGRAM_CHAT_ID in .env")
+
+    from agent import run_agent_loop
+    bot = Bot(token=TOKEN)
+    await run_agent_loop(CHAT_IDS, bot, force_weekly=True)
 
 
 if __name__ == "__main__":
