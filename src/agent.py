@@ -47,6 +47,7 @@ from weekly import (
     update_user_profile,
     generate_case_file_text,
     get_user_snippets,
+    get_user_profile,
     _ensure_profile_tables,
     _send_cost_dm,
     ENABLE_AI_SUMMARY,
@@ -610,6 +611,112 @@ async def tool_add_media(conn, chat_id, bot, params):
 
     except Exception as e:
         print(f"  add_media failed: {e}")
+        return False
+
+
+@register_tool(
+    name="update_casefile",
+    description="A user just revealed something interesting about their personality, interests, "
+                "or opinions. Update their Case File on the dashboard and announce the discovery.",
+    guidelines="Only fire when someone shares something genuinely revealing — a strong opinion, "
+               "a surprising personal detail, a recurring fixation. Not every message is interesting. "
+               "Don't fire more than once per agent cycle.",
+)
+async def tool_update_casefile(conn, chat_id, bot, params):
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+        # Get recent messages to find the interesting contribution
+        recent = conn.execute(
+            """
+            SELECT COALESCE(username, full_name, 'unknown') AS who,
+                   user_id, text
+            FROM messages
+            WHERE chat_id = ? AND text IS NOT NULL AND LENGTH(TRIM(text)) >= 10
+            ORDER BY sent_at_utc DESC
+            LIMIT 25;
+            """,
+            (chat_id,),
+        ).fetchall()
+        snippets = "\n".join(f"{who}: {text[:200]}" for who, uid, text in reversed(recent) if text)
+
+        # Build username -> user_id lookup
+        user_id_map = {}
+        for who, uid, _ in recent:
+            if uid and who:
+                user_id_map[who] = uid
+
+        # Ask Gemini who said something interesting and what the discovery is
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=(
+                "Analyze these group chat messages. Identify the single most personality-revealing "
+                "moment — someone sharing a strong opinion, a surprising fact about themselves, "
+                "a recurring obsession, a telling joke, or an unusual take.\n\n"
+                "Respond with ONLY valid JSON:\n"
+                '{"found": true, "username": "<who said it>", '
+                '"discovery": "<1 sentence: what was revealed about their personality>", '
+                '"announcement": "<a short wry message (1-2 sentences) announcing that the bot '
+                'has updated this person\'s Case File based on what it just learned. Be playful, '
+                'like a detective noting a new clue. Don\'t be cringe.>"}\n\n'
+                "If nothing stands out, respond with:\n"
+                '{"found": false}\n\n'
+                f"Messages:\n{snippets}"
+            ),
+            config={"max_output_tokens": 200},
+        )
+
+        raw = (response.text or "").strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+        result = json.loads(raw)
+
+        if not result.get("found"):
+            print("  update_casefile: nothing interesting found")
+            return False
+
+        target_username = result.get("username", "").strip()
+        discovery = result.get("discovery", "").strip()
+        announcement = result.get("announcement", "").strip()
+
+        if not target_username or not discovery:
+            return False
+
+        target_uid = user_id_map.get(target_username)
+        if not target_uid:
+            print(f"  update_casefile: couldn't find user_id for @{target_username}")
+            return False
+
+        # Get this user's recent messages for the profile update
+        since_7d = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        user_snippets = get_user_snippets(conn, chat_id, target_username, since_7d)
+        if not user_snippets:
+            return False
+
+        # Update the rolling profile
+        _ensure_profile_tables(conn)
+        profile_text = update_user_profile(conn, target_uid, target_username, user_snippets)
+        if not profile_text:
+            return False
+
+        # Regenerate the case file dossier
+        version_row = conn.execute(
+            "SELECT version FROM user_profiles WHERE user_id = ?;", (target_uid,)
+        ).fetchone()
+        version = version_row[0] if version_row else 1
+        generate_case_file_text(conn, target_uid, target_username, profile_text, version)
+
+        # Announce to the group
+        msg = f"🕵️ {announcement}\n\n📋 Check the updated Case File on the /dashboard"
+        await bot.send_message(chat_id=chat_id, text=msg)
+        print(f"  update_casefile: updated @{target_username} — {discovery}")
+        return True
+
+    except Exception as e:
+        print(f"  update_casefile failed: {e}")
         return False
 
 

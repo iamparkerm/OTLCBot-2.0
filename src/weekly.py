@@ -384,6 +384,25 @@ def generate_case_file_text(
             "Factor this into your analysis — the real person may be hiding behind the persona."
         )
 
+    # Fetch previous case file so Gemini can note evolution
+    prev_row = conn.execute(
+        "SELECT case_file_text FROM user_profiles WHERE user_id = ?;",
+        (user_id,),
+    ).fetchone()
+    previous_case_file = prev_row[0] if prev_row and prev_row[0] else ""
+
+    evolution_note = ""
+    if previous_case_file and version > 1:
+        evolution_note = (
+            f"\n\n--- PREVIOUS CASE FILE (for trend reference) ---\n{previous_case_file}\n"
+            f"--- END PREVIOUS ---\n\n"
+            "Compare the previous case file to the new profile data. In your ANALYST NOTES, "
+            "include a brief observation about how the subject has evolved, shifted, or "
+            "remained stubbornly consistent since the last assessment. Note any new fixations, "
+            "abandoned interests, or personality drift. Keep this to 1-2 sentences within "
+            "the existing ANALYST NOTES section — don't add a separate section."
+        )
+
     try:
         from google import genai
 
@@ -400,13 +419,13 @@ def generate_case_file_text(
                 f"Use these sections: SUBJECT, STATUS, CONFIDENCE LEVEL, BEHAVIORAL PATTERNS, "
                 f"KNOWN INTERESTS, COMMUNICATION STYLE, ANALYST NOTES.\n\n"
                 f"Confidence level: {confidence} (based on {version} week(s) of observation)\n\n"
-                f"Keep it under 200 words. Be wry and observational, not mean. "
+                f"Keep it under 250 words. Be wry and observational, not mean. "
                 f"The humor comes from the gap between your analytical tone and the messy "
                 f"humanity of the subject. End with a brief analyst note that reflects on "
-                f"the difficulty of truly knowing another person.{irony_note}\n\n"
+                f"the difficulty of truly knowing another person.{irony_note}{evolution_note}\n\n"
                 f"Raw profile data:\n{profile_text}"
             ),
-            config={"max_output_tokens": 350},
+            config={"max_output_tokens": 400},
         )
         case_file = response.text.strip() if response.text else ""
         if not case_file:
