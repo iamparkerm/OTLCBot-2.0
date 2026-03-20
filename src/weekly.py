@@ -44,7 +44,7 @@ COST_PER_IMAGE = 0.039          # gemini-2.5-flash-image, per image
 COST_PER_TEXT_CALL = 0.0015     # gemini-2.5-flash-lite, rough average per API call (~1500 tokens total)
 
 # ---------- Helpers ----------
-def get_weekly_snippets(conn: sqlite3.Connection, chat_id: int, since_iso: str, limit: int = 30) -> str:
+def get_weekly_snippets(conn: sqlite3.Connection, chat_id: int, since_iso: str, limit: int = 50) -> str:
     rows = conn.execute(
         """
         SELECT username, text
@@ -113,24 +113,34 @@ def generate_weekly_image(snippets: str, context: str = "", retries: int = 2) ->
                 f"{context}\n\n"
             )
 
-        # Step 1: ask the text model to write a vivid image prompt from the snippets
+        # Step 1: ask the text model to summarize the week's vibe
         prompt_response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=(
                 f"{context_block}"
-                "Based on these group chat snippets from the past week, write a single "
-                "sentence describing a fun, illustrated scene that captures the week's vibe. "
-                "Be specific and visual. No more than 30 words.\n\n"
+                "Based on these group chat snippets from the past week, write a 2-3 sentence "
+                "summary describing the week's vibe, themes, and/or conflicts. "
+                "Be specific and visual. No more than 50 words.\n\n"
                 f"{snippets}"
             ),
-            config={"max_output_tokens": 60},
+            config={"max_output_tokens": 100},
         )
-        image_prompt = (prompt_response.text or "").strip()
-        if not image_prompt or len(image_prompt) < 10:
-            print("  Image prompt generation returned empty/too-short result, skipping image")
+        scene = (prompt_response.text or "").strip()
+        if not scene or len(scene) < 10:
+            print("  Scene summary returned empty/too-short result, skipping image")
             return None, None
-        image_prompt += ", New Yorker cartoon style, single panel, loose ink illustration, subtle humor"
-        print(f"  Image prompt: {image_prompt}")
+        image_prompt = (
+            f"{scene}\n\n"
+            "Generate a single-panel cartoon in the signature style of The New Yorker, "
+            "using a monochrome palette (black, white, and a light ink wash). "
+            "The drawing should use loose, expressive lines. Render one complex, detailed scene "
+            "that visually combines or satirizes the key topics identified above (e.g., perhaps "
+            "showing characters in an absurd situation that references multiple chat discussions at once). "
+            "CRITICAL: Limit any dialogue or speech bubbles. Do NOT include a caption beneath the image. "
+            "The humor and narrative must be conveyed through the visual composition and the expressions "
+            "of the characters."
+        )
+        print(f"  Scene summary: {scene}")
 
         # Step 2: generate the image (with retry on rate limits)
         for attempt in range(retries + 1):
