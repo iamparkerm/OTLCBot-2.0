@@ -208,9 +208,14 @@ def gather_context(conn: sqlite3.Connection, chat_id: int) -> dict:
 # Reason — system prompt is built from the tool registry
 # ============================================================
 
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "KarlPopper")
+
 GLOBAL_GUIDELINES = [
     "If the bot acted less than 4 hours ago, almost always choose \"nothing\".",
     "If there are fewer than 10 messages in the last 24h, the chat is quiet — choose \"nothing\".",
+    f"NEVER focus commentary or announcements on @{ADMIN_USERNAME}. "
+    f"When choosing a user for update_casefile, sincerity_check, or send_commentary, "
+    f"always pick someone other than @{ADMIN_USERNAME}.",
 ]
 
 
@@ -640,11 +645,14 @@ async def tool_update_casefile(conn, chat_id, bot, params):
             """,
             (chat_id,),
         ).fetchall()
-        snippets = "\n".join(f"{who}: {text[:200]}" for who, uid, text in reversed(recent) if text)
+        # Filter out admin messages so Gemini focuses on other users
+        filtered = [(who, uid, text) for who, uid, text in recent
+                     if who.lower() != ADMIN_USERNAME.lower()]
+        snippets = "\n".join(f"{who}: {text[:200]}" for who, uid, text in reversed(filtered) if text)
 
-        # Build username -> user_id lookup
+        # Build username -> user_id lookup (excluding admin)
         user_id_map = {}
-        for who, uid, _ in recent:
+        for who, uid, _ in filtered:
             if uid and who:
                 user_id_map[who] = uid
 
