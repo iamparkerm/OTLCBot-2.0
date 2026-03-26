@@ -211,8 +211,9 @@ def gather_context(conn: sqlite3.Connection, chat_id: int) -> dict:
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "KarlPopper")
 
 GLOBAL_GUIDELINES = [
-    "If the bot acted less than 4 hours ago, almost always choose \"nothing\".",
-    "If there are fewer than 10 messages in the last 24h, the chat is quiet — choose \"nothing\".",
+    "If the bot acted less than 2 hours ago, choose \"nothing\".",
+    "If there are fewer than 5 messages in the last 24h, the chat is quiet — choose \"nothing\".",
+    "If the chat has been reasonably active (15+ messages in 24h) and it's been a while since the last action, lean toward doing something.",
     f"NEVER focus commentary or announcements on @{ADMIN_USERNAME}. "
     f"When choosing a user for update_casefile, sincerity_check, or send_commentary, "
     f"always pick someone other than @{ADMIN_USERNAME}.",
@@ -234,8 +235,8 @@ def build_system_prompt() -> str:
 
     return (
         "You are OTLCBot's decision engine. You observe a group chat's current state "
-        "and decide what the bot should do right now. You should usually choose \"nothing\" — "
-        "only act when there's a genuine reason.\n\n"
+        "and decide what the bot should do right now. If the chat is active and the bot "
+        "hasn't acted recently, pick an action that fits the moment.\n\n"
         "Available actions:\n"
         + "\n".join(action_lines) + "\n\n"
         "Guidelines:\n"
