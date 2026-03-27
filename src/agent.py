@@ -26,6 +26,15 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(dotenv_path=ROOT / ".env")
 
+# ==========================================================================
+# Group Structure  (see weekly.py for full docs)
+# ==========================================================================
+# 1. Penetr8in' Experiences  -1003792615572   (standalone)
+# 2. Owl Town (combined report → Omelas Basement -1001320128437):
+#      Omelas Basement -1001320128437   Insta(Tele)gram -1001789253890
+#      Books -952331006    AI -4737782983    Health -339793553    Jocks -876016974
+# ==========================================================================
+
 DB_PATH = Path(os.getenv("DB_PATH", ROOT / "data.db")).expanduser().resolve()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 AGENT_MSG_THRESHOLD = int(os.getenv("AGENT_MSG_THRESHOLD", "50"))
@@ -33,20 +42,19 @@ AGENT_MSG_THRESHOLD = int(os.getenv("AGENT_MSG_THRESHOLD", "50"))
 # Import existing tools from weekly.py
 from weekly import (
     get_weekly_snippets,
-    generate_ai_recap,
     generate_weekly_image,
-    build_weekly_report,
-    build_owl_town_report,
     analyze_sincerity,
     save_sincerity_scores,
     build_group_sincerity_message,
-    build_user_dm,
     get_sincerity_snippets,
     get_group_theme,
     update_group_theme,
     update_user_profile,
     generate_case_file_text,
     get_user_snippets,
+    OWL_TOWN_CHAT_IDS,
+    OWL_TOWN_SEND_TO,
+    OWL_TOWN_NAMES,
     get_user_profile,
     _ensure_profile_tables,
     _send_cost_dm,
@@ -368,31 +376,92 @@ async def tool_send_commentary(conn, chat_id, bot, params):
 
 
 @register_tool(
-    name="generate_cartoon",
-    description="Create an illustrated cartoon about recent conversation. "
-                "Only for especially active or funny weeks.",
-    guidelines="Don't generate cartoons more than once a week.",
+    name="illustrated_summary",
+    description="Generate an illustrated cartoon of recent conversation with a witty caption. "
+                "A fun, cohesive snapshot of what the group has been talking about.",
+    guidelines="Use when the chat has been active and interesting. Don't fire more than once a week. "
+               "This is the agent's version of a visual recap — not the full Friday report.",
     cost=0.04,
 )
-async def tool_generate_cartoon(conn, chat_id, bot, params):
+async def tool_illustrated_summary(conn, chat_id, bot, params):
     since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-    snippets = get_weekly_snippets(conn, chat_id, since)
-    if snippets:
-        theme = get_group_theme(conn, chat_id) or ""
-        image_bytes, image_prompt = generate_weekly_image(snippets, context=theme)
-        if image_bytes:
-            week_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            sent_msg = await bot.send_photo(chat_id=chat_id, photo=io.BytesIO(image_bytes))
-            if sent_msg.photo:
-                conn.execute(
-                    "INSERT INTO weekly_images (chat_id, week_of, image_prompt, telegram_file_id, created_at) "
-                    "VALUES (?, ?, ?, ?, ?);",
-                    (chat_id, week_of, image_prompt, sent_msg.photo[-1].file_id,
-                     datetime.now(timezone.utc).isoformat()),
-                )
-                conn.commit()
-            return True
-    return False
+
+    # For Owl Town chats, pull snippets from ALL sub-chats
+    is_owl_town = str(chat_id) in OWL_TOWN_CHAT_IDS
+    send_to = int(OWL_TOWN_SEND_TO) if is_owl_town and OWL_TOWN_SEND_TO else chat_id
+
+    if is_owl_town:
+        owl_cids = [int(c) for c in OWL_TOWN_CHAT_IDS]
+        placeholders = ",".join("?" * len(owl_cids))
+        rows = conn.execute(
+            f"""
+            SELECT COALESCE(username, full_name, 'unknown'), text
+            FROM messages
+            WHERE chat_id IN ({placeholders}) AND sent_at_utc >= ?
+              AND text IS NOT NULL AND LENGTH(TRIM(text)) BETWEEN 20 AND 200
+            ORDER BY RANDOM() LIMIT 50;
+            """,
+            (*owl_cids, since),
+        ).fetchall()
+        snippets = "\n".join(f"{who}: {text[:200]}" for who, text in rows if text)
+        # Gather themes from all constituent groups
+        context_parts = []
+        for cid in owl_cids:
+            theme = get_group_theme(conn, cid)
+            if theme:
+                name = OWL_TOWN_NAMES.get(str(cid), f"Chat {cid}")
+                context_parts.append(f"[{name}]: {theme}")
+        theme_context = "\n\n".join(context_parts)
+    else:
+        snippets = get_weekly_snippets(conn, chat_id, since)
+        theme_context = get_group_theme(conn, chat_id) or ""
+
+    if not snippets:
+        return False
+
+    # Generate the illustration
+    image_bytes, image_prompt = generate_weekly_image(snippets, context=theme_context)
+    if not image_bytes:
+        return False
+
+    # Generate a witty caption to go with the image
+    try:
+        from google import genai
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=(
+                "You are OTLCBot, a wry group chat bot. Based on the recent conversation below, "
+                "write a SHORT caption (2-3 sentences max) for an illustrated cartoon that captures "
+                "the week's vibe. Be funny and specific to what people actually talked about. "
+                "Don't explain the image — riff on the conversations.\n\n"
+                f"Group personality: {theme_context}\n\n"
+                f"Recent messages:\n{snippets[:2000]}"
+            ),
+            config={"max_output_tokens": 100},
+        )
+        caption = (response.text or "").strip()
+    except Exception as e:
+        print(f"  Caption generation failed: {e}")
+        caption = ""
+
+    # Send image + caption together
+    week_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    sent_msg = await bot.send_photo(
+        chat_id=send_to,
+        photo=io.BytesIO(image_bytes),
+        caption=caption or None,
+    )
+    if sent_msg.photo:
+        conn.execute(
+            "INSERT INTO weekly_images (chat_id, week_of, image_prompt, telegram_file_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?);",
+            (send_to, week_of, image_prompt, sent_msg.photo[-1].file_id,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    return True
 
 
 @register_tool(
@@ -456,52 +525,6 @@ async def tool_sincerity_check(conn, chat_id, bot, params):
     return False
 
 
-@register_tool(
-    name="weekly_report",
-    description="Generate the full weekly report with stats, recap, and optional cartoon. "
-                "Usually only on Fridays or when forced.",
-)
-async def tool_weekly_report(conn, chat_id, bot, params):
-    _ensure_profile_tables(conn)
-
-    text = build_weekly_report(chat_id)
-    week_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-
-    # Sincerity index
-    if ENABLE_SINCERITY_INDEX and GEMINI_API_KEY:
-        sincerity_snippets = get_sincerity_snippets(conn, chat_id, since, SINCERITY_SNIPPET_LIMIT)
-        if sincerity_snippets:
-            sincerity_data = analyze_sincerity(sincerity_snippets)
-            if sincerity_data:
-                group_msg = build_group_sincerity_message(conn, chat_id, sincerity_data, week_of)
-                text += "\n\n" + group_msg
-                save_sincerity_scores(conn, chat_id, week_of, sincerity_data)
-                conn.commit()
-
-    # Group theme + cartoon
-    image_bytes = None
-    image_prompt = None
-    if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
-        img_snippets = get_weekly_snippets(conn, chat_id, since)
-        if img_snippets:
-            group_theme = update_group_theme(conn, chat_id, img_snippets)
-            image_bytes, image_prompt = generate_weekly_image(img_snippets, context=group_theme)
-
-    # Send
-    if image_bytes:
-        sent_msg = await bot.send_photo(chat_id=chat_id, photo=io.BytesIO(image_bytes))
-        if sent_msg.photo:
-            conn.execute(
-                "INSERT INTO weekly_images (chat_id, week_of, image_prompt, telegram_file_id, created_at) "
-                "VALUES (?, ?, ?, ?, ?);",
-                (chat_id, week_of, image_prompt, sent_msg.photo[-1].file_id,
-                 datetime.now(timezone.utc).isoformat()),
-            )
-            conn.commit()
-
-    await bot.send_message(chat_id=chat_id, text=text)
-    return True
 
 
 @register_tool(
@@ -745,19 +768,17 @@ def _log_action(conn: sqlite3.Connection, chat_id: int, action: str, reason: str
 async def run_agent_loop(
     chat_ids: list[str],
     bot,
-    force_weekly: bool = False,
 ) -> None:
     """
     Main agent entry point. For each chat:
     1. Gather context
-    2. Ask Gemini what to do (or force weekly_report if flag is set)
+    2. Ask Gemini what to do
     3. Execute the chosen action
     4. Log the decision
 
     Args:
         chat_ids: List of chat ID strings to process.
         bot: Telegram Bot instance.
-        force_weekly: If True, override the agent's decision with weekly_report.
     """
     if not GEMINI_API_KEY:
         print("Agent: GEMINI_API_KEY not set, skipping.")
@@ -780,14 +801,9 @@ async def run_agent_loop(
             print(f"  Hours since last action: {context['hours_since_last_bot_action']}")
             print(f"  Open bets: {len(context['open_bets'])}")
 
-            if force_weekly:
-                # Weekly cron: still let agent see the state, but override to weekly_report
-                decision = {"action": "weekly_report", "reason": "scheduled weekly run", "params": {}}
-                print(f"  Decision (forced): weekly_report")
-            else:
-                # Reason
-                decision = reason(context)
-                print(f"  Decision: {decision['action']} — {decision.get('reason', '')}")
+            # Reason
+            decision = reason(context)
+            print(f"  Decision: {decision['action']} — {decision.get('reason', '')}")
 
             # Act
             if decision["action"] != "nothing":
@@ -801,10 +817,3 @@ async def run_agent_loop(
             else:
                 _log_action(conn, chat_id, "nothing", decision.get("reason", ""), True)
                 print(f"  No action taken.")
-
-    # Send admin cost/health DM on weekly runs
-    if force_weekly:
-        # Rough cost estimate: 1 reason call per chat + whatever each action cost
-        estimated_text_calls = len(chat_ids) * 5  # conservative estimate
-        estimated_images = len(chat_ids)           # one cartoon per chat
-        await _send_cost_dm(bot, estimated_images, estimated_text_calls)

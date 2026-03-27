@@ -14,6 +14,15 @@ from telegram.ext import (
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(dotenv_path=ROOT / ".env")
 
+# ==========================================================================
+# Group Structure  (see weekly.py for full docs)
+# ==========================================================================
+# 1. Penetr8in' Experiences  -1003792615572   (standalone)
+# 2. Owl Town (combined report → Omelas Basement -1001320128437):
+#      Omelas Basement -1001320128437   Insta(Tele)gram -1001789253890
+#      Books -952331006    AI -4737782983    Health -339793553    Jocks -876016974
+# ==========================================================================
+
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DB_PATH = os.getenv("DB_PATH", str(ROOT / "data.db"))
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")

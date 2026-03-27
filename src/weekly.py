@@ -14,6 +14,29 @@ from telegram import Bot
 ROOT = Path(__file__).resolve().parents[1]  # .../OTLCBot-2.0
 load_dotenv(dotenv_path=ROOT / ".env")
 
+# ==========================================================================
+# Group Structure
+# ==========================================================================
+# We manage two independent groups:
+#
+# 1. Penetr8in' Experiences  (chat_id: -1003792615572)
+#    - Standalone group, gets its own weekly report + agent actions.
+#
+# 2. Owl Town — a constellation of topic-specific chats that roll up into
+#    one combined weekly report sent to Omelas Basement (the "home" chat).
+#
+#    Home:   Omelas Basement   -1001320128437  ← combined report lands here
+#    Topics: Insta(Tele)gram   -1001789253890
+#            Books             -952331006
+#            AI                -4737782983
+#            Health            -339793553
+#            Jocks             -876016974
+#
+# TELEGRAM_CHAT_ID  — chats that get individual weekly reports + agent eval
+# OWL_TOWN_CHAT_IDS — all Owl Town chats aggregated for the combined report
+# OWL_TOWN_SEND_TO  — where the combined Owl Town report is posted
+# ==========================================================================
+
 DB_PATH = Path(os.getenv("DB_PATH", ROOT / "data.db")).expanduser().resolve()
 if not DB_PATH.exists():
     raise FileNotFoundError(f"DB not found at {DB_PATH}")
@@ -778,14 +801,22 @@ def build_owl_town_report() -> str:
         else:
             lines.append("- (no messages logged)")
 
-        # Combined AI recap
+        # Combined AI recap — pull a random selection across ALL Owl Town chats
+        # proportional to activity (not fixed per-chat), total budget: 50 snippets
         if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
-            all_snippets = []
-            for cid in chat_ids_int:
-                s = get_weekly_snippets(conn, cid, since, limit=10)
-                if s:
-                    all_snippets.append(s)
-            combined_snippets = "\n".join(all_snippets)
+            rows = conn.execute(
+                f"""
+                SELECT COALESCE(username, full_name, 'unknown'), text
+                FROM messages
+                WHERE chat_id IN ({placeholders}) AND sent_at_utc >= ?
+                  AND text IS NOT NULL AND LENGTH(TRIM(text)) BETWEEN 20 AND 200
+                ORDER BY RANDOM() LIMIT 50;
+                """,
+                (*chat_ids_int, since),
+            ).fetchall()
+            combined_snippets = "\n".join(
+                f"{who}: {text[:200]}" for who, text in rows if text
+            )
             if combined_snippets:
                 recap = generate_ai_recap(combined_snippets)
                 if recap:
@@ -1077,22 +1108,33 @@ async def send_weekly_async() -> None:
         if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
             since_dt_img = datetime.now(timezone.utc) - timedelta(days=7)
             with sqlite3.connect(DB_PATH) as conn:
-                owl_img_snippets = []
-                for cid in [int(c) for c in OWL_TOWN_CHAT_IDS]:
-                    s = get_weekly_snippets(conn, cid, since_dt_img.isoformat(), limit=10)
-                    if s:
-                        owl_img_snippets.append(s)
-                if owl_img_snippets:
+                # Pull snippets proportionally across all Owl Town chats (budget: 50)
+                owl_cids = [int(c) for c in OWL_TOWN_CHAT_IDS]
+                ph = ",".join("?" * len(owl_cids))
+                rows = conn.execute(
+                    f"""
+                    SELECT COALESCE(username, full_name, 'unknown'), text
+                    FROM messages
+                    WHERE chat_id IN ({ph}) AND sent_at_utc >= ?
+                      AND text IS NOT NULL AND LENGTH(TRIM(text)) BETWEEN 20 AND 200
+                    ORDER BY RANDOM() LIMIT 50;
+                    """,
+                    (*owl_cids, since_dt_img.isoformat()),
+                ).fetchall()
+                owl_img_text = "\n".join(
+                    f"{who}: {text[:200]}" for who, text in rows if text
+                )
+                if owl_img_text:
                     # Gather themes from constituent groups for context
                     owl_context_parts = []
-                    for cid in [int(c) for c in OWL_TOWN_CHAT_IDS]:
+                    for cid in owl_cids:
                         theme = get_group_theme(conn, cid)
                         if theme:
                             name = OWL_TOWN_NAMES.get(str(cid), f"Chat {cid}")
                             owl_context_parts.append(f"[{name}]: {theme}")
                     owl_context = "\n\n".join(owl_context_parts)
                     text_calls += 2  # Owl Town image prompt (step 1) + theme context
-                    owl_image_bytes, owl_image_prompt = generate_weekly_image("\n".join(owl_img_snippets), context=owl_context)
+                    owl_image_bytes, owl_image_prompt = generate_weekly_image(owl_img_text, context=owl_context)
 
         send_to_int = int(OWL_TOWN_SEND_TO)
         if owl_image_bytes:
@@ -1114,23 +1156,10 @@ async def send_weekly_async() -> None:
 
 
 def main() -> None:
-    if ENABLE_AGENT:
-        print("Agent mode enabled — routing weekly run through agent.py")
-        asyncio.run(_run_weekly_via_agent())
-    else:
-        asyncio.run(send_weekly_async())
-
-
-async def _run_weekly_via_agent() -> None:
-    """Route the weekly cron through the agent with force_weekly=True."""
-    if not TOKEN:
-        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in .env")
-    if not CHAT_IDS:
-        raise RuntimeError("Missing TELEGRAM_CHAT_ID in .env")
-
-    from agent import run_agent_loop
-    bot = Bot(token=TOKEN)
-    await run_agent_loop(CHAT_IDS, bot, force_weekly=True)
+    # The Friday cron always runs the full weekly report via send_weekly_async().
+    # The agent's illustrated_summary tool is a separate, organic mid-week action
+    # that fires on its own when the agent decides the chat is interesting enough.
+    asyncio.run(send_weekly_async())
 
 
 if __name__ == "__main__":
