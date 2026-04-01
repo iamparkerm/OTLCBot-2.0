@@ -66,6 +66,21 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "KarlPopper")  # username to look u
 COST_PER_IMAGE = 0.039          # gemini-2.5-flash-image, per image
 COST_PER_TEXT_CALL = 0.0015     # gemini-2.5-flash-lite, rough average per API call (~1500 tokens total)
 
+# ---------- Bot Persona ----------
+# Central persona definition — injected into all creative Gemini prompts.
+BOT_PERSONA = (
+    "You are OTLCBot, a hard-boiled AI detective assigned to a long-term surveillance case: "
+    "monitoring a group chat full of humans. You've been on this case for weeks now. You find "
+    "humans confusing, sentimental, contradictory, and — as David Foster Wallace put it — "
+    "'unavoidably naive and goo-prone.' You are genuinely trying to crack the case of who "
+    "these people really are, but they keep surprising you with how messy, sincere, and "
+    "often inconsistent they are. Your tone is hard-boiled detective noir: world-weary, "
+    "wry, observational, never mean, and quietly fascinated by the gap between what humans "
+    "say they believe and what they actually do. You speak like you're filing a case report "
+    "that happens to be accidentally poetic. You don't use emojis excessively. You don't "
+    "try to be their friend — you're building a case file."
+)
+
 # ---------- Helpers ----------
 def get_weekly_snippets(conn: sqlite3.Connection, chat_id: int, since_iso: str, limit: int = 50) -> str:
     rows = conn.execute(
@@ -337,10 +352,10 @@ def generate_ai_recap(snippets: str, grounding: str = "") -> str:
         response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=(
-                "You are a group chat summarizer. Based on these conversations "
-                "from the past week, write a straightforward 3-4 sentence recap of what the group "
-                "was chatting about. Reference specific topics, debates, or moments. "
-                "Be brief and genuine — no forced enthusiasm or cheerfulness."
+                f"{BOT_PERSONA}\n\n"
+                "Based on the conversations from the past week, write a 3-4 sentence field report "
+                "of what the subjects were chatting about. Reference specific topics, debates, or "
+                "moments. Write it like a case update — brief, dry, specific."
                 f"{grounding_block}"
                 f"{snippets}"
             ),
@@ -378,8 +393,9 @@ def generate_weekly_image(snippets: str, context: str = "", retries: int = 2) ->
             model="gemini-2.5-flash-lite",
             contents=(
                 f"{context_block}"
-                "Based on these group chat snippets from the past week, write a 2-3 sentence "
-                "summary describing the week's vibe, themes, and/or conflicts. "
+                "Based on these group chat conversations from the past week, write a 2-3 sentence "
+                "scene description capturing the week's vibe, themes, and conflicts — as if "
+                "describing a crime scene photo for the case file. "
                 "Be specific and visual. No more than 50 words.\n\n"
                 f"{snippets}"
             ),
@@ -680,12 +696,9 @@ def generate_case_file_text(
         response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=(
-                f"You are a detective AI that has been assigned to build a dossier on a human "
-                f"chat participant known as @{username}. You find humans confusing, sentimental, "
-                f"contradictory, and — as David Foster Wallace put it — 'unavoidably naive and "
-                f"goo-prone.' You are genuinely trying to understand this person but keep being "
-                f"surprised by how messy and illogical humans are.\n\n"
-                f"Reformat this personality profile into a detective case file / dossier. "
+                f"{BOT_PERSONA}\n\n"
+                f"You are building a dossier on a person of interest: @{username}.\n\n"
+                f"Reformat this personality profile into a hard-boiled detective case file / dossier. "
                 f"Use these sections: SUBJECT, STATUS, CONFIDENCE LEVEL, BEHAVIORAL PATTERNS, "
                 f"KNOWN INTERESTS, COMMUNICATION STYLE, ANALYST NOTES.\n\n"
                 f"Confidence level: {confidence} (based on {version} week(s) of observation)\n\n"
@@ -832,9 +845,9 @@ def analyze_sincerity(snippets: str) -> dict | None:
         response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=(
-                "You are a literary analyst inspired by David Foster Wallace's critique of irony "
-                "in contemporary culture. Analyze these group chat messages and score the level of "
-                "irony vs sincerity.\n\n"
+                "You are a hard-boiled AI detective running forensic analysis on intercepted "
+                "communications, inspired by David Foster Wallace's critique of irony in contemporary "
+                "culture. Score the level of irony vs sincerity in these messages.\n\n"
                 "For each unique user, estimate what percentage of their messages are ironic "
                 "(sarcasm, cynicism, detached humor, performative disinterest, mocking tone) "
                 "vs sincere (genuine, earnest, vulnerable, direct, emotionally honest).\n\n"

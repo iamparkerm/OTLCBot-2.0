@@ -66,6 +66,7 @@ from weekly import (
     SINCERITY_SNIPPET_LIMIT,
     COST_PER_IMAGE,
     COST_PER_TEXT_CALL,
+    BOT_PERSONA,
 )
 
 
@@ -245,7 +246,8 @@ def build_system_prompt() -> str:
             guideline_lines.append(f"- {name}: {tool['guidelines']}")
 
     return (
-        "You are OTLCBot's decision engine. You observe a group chat's current state "
+        "You are OTLCBot's decision engine — a hard-boiled AI detective deciding whether "
+        "to intervene in the case or keep watching. You observe a group chat's current state "
         "and decide what the bot should do right now. If the chat is active and the bot "
         "hasn't acted recently, pick an action that fits the moment.\n\n"
         "Available actions:\n"
@@ -360,12 +362,12 @@ async def tool_send_commentary(conn, chat_id, bot, params):
         response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=(
-                "You are OTLCBot, a wry and observant group chat bot. Based on the recent "
-                "conversation below, write ONE brief message (1-2 sentences max) that makes "
-                "a genuine observation about what's being discussed. Be natural, not forced. "
-                "Don't be cringe. Don't use emojis excessively. Match the group's tone. "
-                "You can reference open bets, watchlist items, or what you know about the people "
-                "talking if it fits naturally.\n\n"
+                f"{BOT_PERSONA}\n\n"
+                "Based on the recent conversation, write ONE brief message (1-2 sentences max) — "
+                "a field observation for the case file that you're reading aloud. It should sound "
+                "like a detective muttering into a tape recorder about what the subjects are up to. "
+                "You can reference open bets, watchlist items, or what you know about these people "
+                "if it fits naturally.\n\n"
                 f"Group personality: {group_theme}\n"
                 f"{grounding_block}"
                 f"Recent messages:\n{snippets}"
@@ -439,11 +441,11 @@ async def tool_illustrated_summary(conn, chat_id, bot, params):
         response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=(
-                "You are OTLCBot, a wry group chat bot. Based on the recent conversations below, "
-                "write a SHORT caption (2-3 sentences max) for an illustrated cartoon that captures "
-                "the week's vibe. Be funny and specific to what people actually talked about. "
-                "Reference specific topics, debates, or moments from the conversations. "
-                "Don't explain the image — riff on the conversations.\n\n"
+                f"{BOT_PERSONA}\n\n"
+                "Write a SHORT caption (2-3 sentences max) for a surveillance sketch of the subjects. "
+                "It should read like a weary detective's note clipped to a case photo. Be funny and "
+                "specific to what people actually talked about. Don't explain the image — riff on "
+                "the conversations.\n\n"
                 f"Group personality: {theme_context}\n"
                 f"{grounding_block}"
                 f"Conversations:\n{snippets[:2500]}"
@@ -693,15 +695,16 @@ async def tool_update_casefile(conn, chat_id, bot, params):
         response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=(
-                "Analyze these group chat messages. Identify the single most personality-revealing "
-                "moment — someone sharing a strong opinion, a surprising fact about themselves, "
-                "a recurring obsession, a telling joke, or an unusual take.\n\n"
+                "Analyze these intercepted group chat messages. Identify the single most "
+                "personality-revealing moment — someone sharing a strong opinion, a surprising "
+                "fact about themselves, a recurring obsession, a telling joke, or an unusual take.\n\n"
                 "Respond with ONLY valid JSON:\n"
                 '{"found": true, "username": "<who said it>", '
                 '"discovery": "<1 sentence: what was revealed about their personality>", '
-                '"announcement": "<a short wry message (1-2 sentences) announcing that the bot '
-                'has updated this person\'s Case File based on what it just learned. Be playful, '
-                'like a detective noting a new clue. Don\'t be cringe.>"}\n\n'
+                '"announcement": "<a short hard-boiled message (1-2 sentences) announcing that '
+                "the detective has updated this person's Case File based on new evidence. "
+                "Write it like a noir detective filing a report — world-weary, wry, like you've "
+                'seen it all but this particular human still managed to surprise you.>"}\n\n'
                 "If nothing stands out, respond with:\n"
                 '{"found": false}\n\n'
                 f"Messages:\n{snippets}"
