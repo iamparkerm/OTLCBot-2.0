@@ -94,20 +94,257 @@ def get_weekly_snippets(conn: sqlite3.Connection, chat_id: int, since_iso: str, 
     return "\n".join(snippets)
 
 
-def generate_ai_recap(snippets: str) -> str:
+def _detect_bursts(rows, gap_minutes: int = 10) -> list[list]:
+    """Group chronological message rows into conversation bursts.
+
+    A new burst starts when the gap between consecutive messages exceeds
+    gap_minutes. Returns a list of bursts, each burst being a list of rows.
+    """
+    if not rows:
+        return []
+    bursts = [[rows[0]]]
+    for row in rows[1:]:
+        prev_time = bursts[-1][-1][3]  # sent_at_utc field
+        curr_time = row[3]
+        try:
+            gap = (datetime.fromisoformat(curr_time) - datetime.fromisoformat(prev_time)).total_seconds()
+        except (ValueError, TypeError):
+            gap = 9999
+        if gap > gap_minutes * 60:
+            bursts.append([row])
+        else:
+            bursts[-1].append(row)
+    return bursts
+
+
+def _format_burst(burst, mid_to_user: dict, chat_name: str = "") -> str:
+    """Format a conversation burst into readable text with timestamps and reply attribution."""
+    if not burst:
+        return ""
+    # Parse timestamp for header
+    try:
+        first_dt = datetime.fromisoformat(burst[0][3])
+        header_time = first_dt.strftime("%a %-I:%M %p")
+    except (ValueError, TypeError):
+        header_time = "?"
+    header = f"--- Conversation ({header_time})"
+    if chat_name:
+        header += f" in {chat_name}"
+    header += " ---"
+
+    lines = [header]
+    for msg_id, who, text, sent_at, reply_to in burst:
+        if not text:
+            continue
+        reply_tag = ""
+        if reply_to and reply_to in mid_to_user:
+            reply_tag = f" [replying to {mid_to_user[reply_to]}]"
+        lines.append(f"{who}{reply_tag}: {text[:200]}")
+    return "\n".join(lines)
+
+
+def get_conversation_windows(
+    conn: sqlite3.Connection,
+    chat_id: int,
+    since_iso: str,
+    max_chars: int = 3000,
+    min_burst_size: int = 3,
+) -> str:
+    """Pull contiguous conversation windows instead of random samples.
+
+    Selects the densest conversation bursts (clusters of messages within
+    ~10 min of each other), formatted with timestamps and reply attribution.
+    Falls back to get_weekly_snippets if not enough conversation data.
+    """
+    rows = conn.execute(
+        """
+        SELECT message_id,
+               COALESCE(username, full_name, 'unknown') AS who,
+               text, sent_at_utc, reply_to_message_id
+        FROM messages
+        WHERE chat_id = ? AND sent_at_utc >= ?
+          AND text IS NOT NULL AND LENGTH(TRIM(text)) >= 5
+        ORDER BY sent_at_utc ASC;
+        """,
+        (chat_id, since_iso),
+    ).fetchall()
+
+    if len(rows) < 6:
+        return get_weekly_snippets(conn, chat_id, since_iso)
+
+    # Build message_id -> username lookup for reply attribution
+    mid_to_user = {r[0]: r[1] for r in rows if r[0]}
+
+    bursts = _detect_bursts(rows)
+    # Filter small bursts and sort by size (prefer longer conversations)
+    bursts = [b for b in bursts if len(b) >= min_burst_size]
+    bursts.sort(key=len, reverse=True)
+
+    result_parts = []
+    char_count = 0
+    for burst in bursts:
+        formatted = _format_burst(burst, mid_to_user)
+        if char_count + len(formatted) > max_chars:
+            break
+        result_parts.append(formatted)
+        char_count += len(formatted)
+
+    if not result_parts:
+        return get_weekly_snippets(conn, chat_id, since_iso)
+
+    return "\n\n".join(result_parts)
+
+
+def get_conversation_windows_multi(
+    conn: sqlite3.Connection,
+    chat_ids: list[int],
+    since_iso: str,
+    chat_names: dict[str, str] | None = None,
+    max_chars: int = 3000,
+    min_burst_size: int = 3,
+) -> str:
+    """Pull conversation windows across multiple chats (for Owl Town combined reports)."""
+    placeholders = ",".join("?" * len(chat_ids))
+    rows = conn.execute(
+        f"""
+        SELECT message_id,
+               COALESCE(username, full_name, 'unknown') AS who,
+               text, sent_at_utc, reply_to_message_id, chat_id
+        FROM messages
+        WHERE chat_id IN ({placeholders}) AND sent_at_utc >= ?
+          AND text IS NOT NULL AND LENGTH(TRIM(text)) >= 5
+        ORDER BY sent_at_utc ASC;
+        """,
+        (*chat_ids, since_iso),
+    ).fetchall()
+
+    if len(rows) < 6:
+        # Fall back to random sampling across all chats
+        all_snippets = []
+        for cid in chat_ids:
+            s = get_weekly_snippets(conn, cid, since_iso, limit=10)
+            if s:
+                all_snippets.append(s)
+        return "\n".join(all_snippets)
+
+    mid_to_user = {r[0]: r[1] for r in rows if r[0]}
+    chat_names = chat_names or {}
+
+    # Strip chat_id from rows for burst detection (keep it for labeling)
+    chat_id_map = {r[0]: r[5] for r in rows}  # message_id -> chat_id
+    burst_rows = [(r[0], r[1], r[2], r[3], r[4]) for r in rows]
+
+    bursts = _detect_bursts(burst_rows)
+    bursts = [b for b in bursts if len(b) >= min_burst_size]
+    bursts.sort(key=len, reverse=True)
+
+    result_parts = []
+    char_count = 0
+    for burst in bursts:
+        # Determine which chat this burst is mostly in
+        burst_chat_ids = [chat_id_map.get(msg[0]) for msg in burst]
+        most_common_cid = max(set(burst_chat_ids), key=burst_chat_ids.count) if burst_chat_ids else None
+        cname = chat_names.get(str(most_common_cid), "") if most_common_cid else ""
+        formatted = _format_burst(burst, mid_to_user, chat_name=cname)
+        if char_count + len(formatted) > max_chars:
+            break
+        result_parts.append(formatted)
+        char_count += len(formatted)
+
+    if not result_parts:
+        all_snippets = []
+        for cid in chat_ids:
+            s = get_weekly_snippets(conn, cid, since_iso, limit=10)
+            if s:
+                all_snippets.append(s)
+        return "\n".join(all_snippets)
+
+    return "\n\n".join(result_parts)
+
+
+def build_grounding_block(conn: sqlite3.Connection, chat_id: int | list[int], max_chars: int = 800) -> str:
+    """Assemble a compact context block of facts from the DB for prompt grounding.
+
+    Pulls group theme, open bets, recent watchlist adds, and active user profile
+    headlines. Accepts a single chat_id or a list (for Owl Town multi-chat).
+    """
+    chat_ids = [chat_id] if isinstance(chat_id, int) else chat_id
+    placeholders = ",".join("?" * len(chat_ids))
+    parts = []
+
+    # Group theme(s)
+    themes = []
+    for cid in chat_ids:
+        t = get_group_theme(conn, cid)
+        if t:
+            themes.append(t[:200])
+    if themes:
+        parts.append("Personality: " + " | ".join(themes))
+
+    # Open bets
+    bets = conn.execute(
+        f"""SELECT id, description, wager, created_by_name
+           FROM bets WHERE chat_id IN ({placeholders}) AND settled_at IS NULL
+           ORDER BY created_at LIMIT 5;""",
+        tuple(chat_ids),
+    ).fetchall()
+    if bets:
+        bet_strs = [f'#{b[0]} "{b[1]}" ({b[2]}, by @{b[3]})' for b in bets]
+        parts.append("Open bets: " + ", ".join(bet_strs))
+
+    # Recent watchlist adds (last 14 days)
+    since_14d = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+    watchlist = conn.execute(
+        f"""SELECT title, media_type, added_by_username
+           FROM watchlist WHERE chat_id IN ({placeholders}) AND added_at >= ?
+           ORDER BY added_at DESC LIMIT 5;""",
+        (*chat_ids, since_14d),
+    ).fetchall()
+    if watchlist:
+        wl_strs = [f"{w[0]} ({w[1]}, by @{w[2]})" for w in watchlist]
+        parts.append("Watchlist: " + ", ".join(wl_strs))
+
+    # Active user profile headlines
+    since_7d = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    profiles = conn.execute(
+        f"""SELECT up.username, SUBSTR(up.profile_text, 1, 80)
+           FROM user_profiles up
+           WHERE up.user_id IN (
+               SELECT DISTINCT user_id FROM messages
+               WHERE chat_id IN ({placeholders}) AND sent_at_utc >= ? AND user_id IS NOT NULL
+           )
+           LIMIT 6;""",
+        (*chat_ids, since_7d),
+    ).fetchall()
+    if profiles:
+        prof_strs = [f"{p[0]} ({p[1]}...)" for p in profiles if p[1]]
+        if prof_strs:
+            parts.append("Active members: " + ", ".join(prof_strs))
+
+    if not parts:
+        return ""
+
+    block = "=== GROUP CONTEXT ===\n" + "\n".join(parts)
+    return block[:max_chars]
+
+
+def generate_ai_recap(snippets: str, grounding: str = "") -> str:
     try:
         from google import genai
 
         client = genai.Client(api_key=GEMINI_API_KEY)
+        grounding_block = f"\n\n{grounding}\n\n" if grounding else "\n\n"
         response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=(
-                "You are a group chat summarizer. Based on these message snippets "
+                "You are a group chat summarizer. Based on these conversations "
                 "from the past week, write a straightforward 3-4 sentence recap of what the group "
-                "was chatting about. Be brief and genuine — no forced enthusiasm or cheerfulness.\n\n"
+                "was chatting about. Reference specific topics, debates, or moments. "
+                "Be brief and genuine — no forced enthusiasm or cheerfulness."
+                f"{grounding_block}"
                 f"{snippets}"
             ),
-            config={"max_output_tokens": 150},
+            config={"max_output_tokens": 150, "temperature": 1.3},
         )
         return response.text.strip() if response.text else ""
     except Exception as e:
@@ -146,7 +383,7 @@ def generate_weekly_image(snippets: str, context: str = "", retries: int = 2) ->
                 "Be specific and visual. No more than 50 words.\n\n"
                 f"{snippets}"
             ),
-            config={"max_output_tokens": 100},
+            config={"max_output_tokens": 100, "temperature": 1.4},
         )
         scene = (prompt_response.text or "").strip()
         if not scene or len(scene) < 10:
@@ -289,7 +526,7 @@ def update_group_theme(conn: sqlite3.Connection, chat_id: int, snippets: str) ->
         response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=prompt,
-            config={"max_output_tokens": 500},
+            config={"max_output_tokens": 500, "temperature": 0.8},
         )
         theme_text = response.text.strip() if response.text else ""
         if not theme_text:
@@ -360,7 +597,7 @@ def update_user_profile(conn: sqlite3.Connection, user_id: int, username: str, s
         response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=prompt,
-            config={"max_output_tokens": 400},
+            config={"max_output_tokens": 400, "temperature": 0.8},
         )
         profile_text = response.text.strip() if response.text else ""
         if not profile_text:
@@ -458,7 +695,7 @@ def generate_case_file_text(
                 f"the difficulty of truly knowing another person.{irony_note}{evolution_note}\n\n"
                 f"Raw profile data:\n{profile_text}"
             ),
-            config={"max_output_tokens": 400},
+            config={"max_output_tokens": 400, "temperature": 1.3},
         )
         case_file = response.text.strip() if response.text else ""
         if not case_file:
@@ -607,7 +844,7 @@ def analyze_sincerity(snippets: str) -> dict | None:
                 "100 = fully ironic).\n\n"
                 f"Messages:\n{snippets}"
             ),
-            config={"max_output_tokens": 300},
+            config={"max_output_tokens": 300, "temperature": 0.7},
         )
 
         raw = response.text.strip() if response.text else ""
@@ -722,9 +959,10 @@ def build_weekly_report(chat_id: int) -> str:
             lines.append("- (no messages logged)")
 
         if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
-            snippets = get_weekly_snippets(conn, chat_id, since)
+            snippets = get_conversation_windows(conn, chat_id, since)
             if snippets:
-                recap = generate_ai_recap(snippets)
+                grounding = build_grounding_block(conn, chat_id)
+                recap = generate_ai_recap(snippets, grounding=grounding)
                 if recap:
                     lines.append("")
                     lines.append("🤖 AI Recap:")
@@ -801,24 +1039,14 @@ def build_owl_town_report() -> str:
         else:
             lines.append("- (no messages logged)")
 
-        # Combined AI recap — pull a random selection across ALL Owl Town chats
-        # proportional to activity (not fixed per-chat), total budget: 50 snippets
+        # Combined AI recap — pull conversation windows across ALL Owl Town chats
         if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
-            rows = conn.execute(
-                f"""
-                SELECT COALESCE(username, full_name, 'unknown'), text
-                FROM messages
-                WHERE chat_id IN ({placeholders}) AND sent_at_utc >= ?
-                  AND text IS NOT NULL AND LENGTH(TRIM(text)) BETWEEN 20 AND 200
-                ORDER BY RANDOM() LIMIT 50;
-                """,
-                (*chat_ids_int, since),
-            ).fetchall()
-            combined_snippets = "\n".join(
-                f"{who}: {text[:200]}" for who, text in rows if text
+            combined_snippets = get_conversation_windows_multi(
+                conn, chat_ids_int, since, chat_names=OWL_TOWN_NAMES,
             )
             if combined_snippets:
-                recap = generate_ai_recap(combined_snippets)
+                grounding = build_grounding_block(conn, chat_ids_int)
+                recap = generate_ai_recap(combined_snippets, grounding=grounding)
                 if recap:
                     lines.append("")
                     lines.append("🤖 AI Recap:")
@@ -1006,12 +1234,16 @@ async def send_weekly_async() -> None:
         if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
             since_dt_img = datetime.now(timezone.utc) - timedelta(days=7)
             with sqlite3.connect(DB_PATH) as conn:
-                img_snippets = get_weekly_snippets(conn, chat_id_int, since_dt_img.isoformat())
+                img_snippets = get_conversation_windows(conn, chat_id_int, since_dt_img.isoformat(), max_chars=2500)
                 if img_snippets:
                     group_theme = update_group_theme(conn, chat_id_int, img_snippets)
                     print(f"  Updated group theme for {chat_id_int} ({len(group_theme)} chars)")
+                    grounding = build_grounding_block(conn, chat_id_int)
+                    img_context = group_theme
+                    if grounding:
+                        img_context += "\n\n" + grounding
                     text_calls += 2  # group theme update + image prompt (step 1)
-                    image_bytes, image_prompt = generate_weekly_image(img_snippets, context=group_theme)
+                    image_bytes, image_prompt = generate_weekly_image(img_snippets, context=img_context)
                     if image_bytes:
                         time.sleep(20)  # pace image API calls
 
@@ -1108,21 +1340,10 @@ async def send_weekly_async() -> None:
         if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
             since_dt_img = datetime.now(timezone.utc) - timedelta(days=7)
             with sqlite3.connect(DB_PATH) as conn:
-                # Pull snippets proportionally across all Owl Town chats (budget: 50)
                 owl_cids = [int(c) for c in OWL_TOWN_CHAT_IDS]
-                ph = ",".join("?" * len(owl_cids))
-                rows = conn.execute(
-                    f"""
-                    SELECT COALESCE(username, full_name, 'unknown'), text
-                    FROM messages
-                    WHERE chat_id IN ({ph}) AND sent_at_utc >= ?
-                      AND text IS NOT NULL AND LENGTH(TRIM(text)) BETWEEN 20 AND 200
-                    ORDER BY RANDOM() LIMIT 50;
-                    """,
-                    (*owl_cids, since_dt_img.isoformat()),
-                ).fetchall()
-                owl_img_text = "\n".join(
-                    f"{who}: {text[:200]}" for who, text in rows if text
+                owl_img_text = get_conversation_windows_multi(
+                    conn, owl_cids, since_dt_img.isoformat(),
+                    chat_names=OWL_TOWN_NAMES, max_chars=2500,
                 )
                 if owl_img_text:
                     # Gather themes from constituent groups for context
@@ -1133,6 +1354,9 @@ async def send_weekly_async() -> None:
                             name = OWL_TOWN_NAMES.get(str(cid), f"Chat {cid}")
                             owl_context_parts.append(f"[{name}]: {theme}")
                     owl_context = "\n\n".join(owl_context_parts)
+                    grounding = build_grounding_block(conn, owl_cids)
+                    if grounding:
+                        owl_context += "\n\n" + grounding
                     text_calls += 2  # Owl Town image prompt (step 1) + theme context
                     owl_image_bytes, owl_image_prompt = generate_weekly_image(owl_img_text, context=owl_context)
 

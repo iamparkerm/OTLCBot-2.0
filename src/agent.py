@@ -42,6 +42,9 @@ AGENT_MSG_THRESHOLD = int(os.getenv("AGENT_MSG_THRESHOLD", "50"))
 # Import existing tools from weekly.py
 from weekly import (
     get_weekly_snippets,
+    get_conversation_windows,
+    get_conversation_windows_multi,
+    build_grounding_block,
     generate_weekly_image,
     analyze_sincerity,
     save_sincerity_scores,
@@ -279,7 +282,7 @@ def reason(context: dict) -> dict:
         response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=f"{system_prompt}\n\n--- CURRENT STATE ---\n{ctx_text}",
-            config={"max_output_tokens": 150},
+            config={"max_output_tokens": 150, "temperature": 0.3},
         )
 
         raw = (response.text or "").strip()
@@ -351,18 +354,23 @@ async def tool_send_commentary(conn, chat_id, bot, params):
         snippets = "\n".join(f"{who}: {text[:150]}" for who, text in reversed(recent) if text)
 
         group_theme = get_group_theme(conn, chat_id) or ""
+        grounding = build_grounding_block(conn, chat_id)
 
+        grounding_block = f"\n{grounding}\n\n" if grounding else "\n"
         response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=(
                 "You are OTLCBot, a wry and observant group chat bot. Based on the recent "
                 "conversation below, write ONE brief message (1-2 sentences max) that makes "
                 "a genuine observation about what's being discussed. Be natural, not forced. "
-                "Don't be cringe. Don't use emojis excessively. Match the group's tone.\n\n"
-                f"Group personality: {group_theme}\n\n"
+                "Don't be cringe. Don't use emojis excessively. Match the group's tone. "
+                "You can reference open bets, watchlist items, or what you know about the people "
+                "talking if it fits naturally.\n\n"
+                f"Group personality: {group_theme}\n"
+                f"{grounding_block}"
                 f"Recent messages:\n{snippets}"
             ),
-            config={"max_output_tokens": 80},
+            config={"max_output_tokens": 80, "temperature": 1.5},
         )
         commentary = (response.text or "").strip()
         if commentary:
@@ -386,24 +394,15 @@ async def tool_send_commentary(conn, chat_id, bot, params):
 async def tool_illustrated_summary(conn, chat_id, bot, params):
     since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
 
-    # For Owl Town chats, pull snippets from ALL sub-chats
+    # For Owl Town chats, pull conversation windows from ALL sub-chats
     is_owl_town = str(chat_id) in OWL_TOWN_CHAT_IDS
     send_to = int(OWL_TOWN_SEND_TO) if is_owl_town and OWL_TOWN_SEND_TO else chat_id
 
     if is_owl_town:
         owl_cids = [int(c) for c in OWL_TOWN_CHAT_IDS]
-        placeholders = ",".join("?" * len(owl_cids))
-        rows = conn.execute(
-            f"""
-            SELECT COALESCE(username, full_name, 'unknown'), text
-            FROM messages
-            WHERE chat_id IN ({placeholders}) AND sent_at_utc >= ?
-              AND text IS NOT NULL AND LENGTH(TRIM(text)) BETWEEN 20 AND 200
-            ORDER BY RANDOM() LIMIT 50;
-            """,
-            (*owl_cids, since),
-        ).fetchall()
-        snippets = "\n".join(f"{who}: {text[:200]}" for who, text in rows if text)
+        snippets = get_conversation_windows_multi(
+            conn, owl_cids, since, chat_names=OWL_TOWN_NAMES, max_chars=2500,
+        )
         # Gather themes from all constituent groups
         context_parts = []
         for cid in owl_cids:
@@ -412,15 +411,22 @@ async def tool_illustrated_summary(conn, chat_id, bot, params):
                 name = OWL_TOWN_NAMES.get(str(cid), f"Chat {cid}")
                 context_parts.append(f"[{name}]: {theme}")
         theme_context = "\n\n".join(context_parts)
+        grounding = build_grounding_block(conn, owl_cids)
     else:
-        snippets = get_weekly_snippets(conn, chat_id, since)
+        snippets = get_conversation_windows(conn, chat_id, since, max_chars=2500)
         theme_context = get_group_theme(conn, chat_id) or ""
+        grounding = build_grounding_block(conn, chat_id)
 
     if not snippets:
         return False
 
+    # Combine theme + grounding for image context
+    img_context = theme_context
+    if grounding:
+        img_context += "\n\n" + grounding
+
     # Generate the illustration
-    image_bytes, image_prompt = generate_weekly_image(snippets, context=theme_context)
+    image_bytes, image_prompt = generate_weekly_image(snippets, context=img_context)
     if not image_bytes:
         return False
 
@@ -429,17 +435,20 @@ async def tool_illustrated_summary(conn, chat_id, bot, params):
         from google import genai
         client = genai.Client(api_key=GEMINI_API_KEY)
 
+        grounding_block = f"\n{grounding}\n\n" if grounding else "\n"
         response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=(
-                "You are OTLCBot, a wry group chat bot. Based on the recent conversation below, "
+                "You are OTLCBot, a wry group chat bot. Based on the recent conversations below, "
                 "write a SHORT caption (2-3 sentences max) for an illustrated cartoon that captures "
                 "the week's vibe. Be funny and specific to what people actually talked about. "
+                "Reference specific topics, debates, or moments from the conversations. "
                 "Don't explain the image — riff on the conversations.\n\n"
-                f"Group personality: {theme_context}\n\n"
-                f"Recent messages:\n{snippets[:2000]}"
+                f"Group personality: {theme_context}\n"
+                f"{grounding_block}"
+                f"Conversations:\n{snippets[:2500]}"
             ),
-            config={"max_output_tokens": 100},
+            config={"max_output_tokens": 100, "temperature": 1.4},
         )
         caption = (response.text or "").strip()
     except Exception as e:
@@ -582,7 +591,7 @@ async def tool_add_media(conn, chat_id, bot, params):
                 f"Already on the list (don't duplicate): {', '.join(existing_titles) if existing_titles else 'nothing yet'}\n\n"
                 f"Messages:\n{snippets}"
             ),
-            config={"max_output_tokens": 100},
+            config={"max_output_tokens": 100, "temperature": 0.4},
         )
 
         raw = (response.text or "").strip()
@@ -697,7 +706,7 @@ async def tool_update_casefile(conn, chat_id, bot, params):
                 '{"found": false}\n\n'
                 f"Messages:\n{snippets}"
             ),
-            config={"max_output_tokens": 200},
+            config={"max_output_tokens": 200, "temperature": 0.5},
         )
 
         raw = (response.text or "").strip()

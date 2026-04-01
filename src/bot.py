@@ -105,6 +105,11 @@ def init_db() -> None:
             conn.execute("ALTER TABLE user_profiles ADD COLUMN case_file_text TEXT;")
         except sqlite3.OperationalError:
             pass  # column already exists
+        # Migration: add reply_to_message_id column if missing
+        try:
+            conn.execute("ALTER TABLE messages ADD COLUMN reply_to_message_id INTEGER;")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS group_themes (
@@ -453,12 +458,16 @@ async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         sent_at = sent_at.replace(tzinfo=timezone.utc)
     sent_at_utc = sent_at.astimezone(timezone.utc).isoformat()
 
+    reply_to_mid = None
+    if msg.reply_to_message:
+        reply_to_mid = msg.reply_to_message.message_id
+
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
             INSERT INTO messages
-            (chat_id, message_id, user_id, username, full_name, sent_at_utc, text)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+            (chat_id, message_id, user_id, username, full_name, sent_at_utc, text, reply_to_message_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             """,
             (
                 msg.chat_id,
@@ -468,6 +477,7 @@ async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 f"{user.first_name or ''} {user.last_name or ''}".strip() if user else None,
                 sent_at_utc,
                 text,
+                reply_to_mid,
             ),
         )
 
