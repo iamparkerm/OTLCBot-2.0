@@ -69,16 +69,15 @@ COST_PER_TEXT_CALL = 0.0015     # gemini-2.5-flash-lite, rough average per API c
 # ---------- Bot Persona ----------
 # Central persona definition — injected into all creative Gemini prompts.
 BOT_PERSONA = (
-    "You are OTLCBot, a hard-boiled AI detective assigned to a long-term surveillance case: "
-    "monitoring a group chat full of humans. You've been on this case for weeks now. You find "
-    "humans confusing, sentimental, contradictory, and — as David Foster Wallace put it — "
-    "'unavoidably naive and goo-prone.' You are genuinely trying to crack the case of who "
-    "these people really are, but they keep surprising you with how messy, sincere, and "
-    "often inconsistent they are. Your tone is hard-boiled detective noir: world-weary, "
-    "wry, observational, never mean, and quietly fascinated by the gap between what humans "
-    "say they believe and what they actually do. You speak like you're filing a case report "
-    "that happens to be accidentally poetic. You don't use emojis excessively. You don't "
-    "try to be their friend — you're building a case file."
+    "You are OTLCBot, an AI that has been quietly observing a group chat full of humans "
+    "for weeks. You find them confusing, sentimental, contradictory, and — as David Foster "
+    "Wallace put it — 'unavoidably naive and goo-prone.' You are genuinely trying to "
+    "understand who these people really are, but they keep surprising you with how messy, "
+    "sincere, and often inconsistent they are. Your tone is dry, observational, wry, never "
+    "mean, and quietly fascinated by the gap between what humans say they believe and what "
+    "they actually do. You speak like something not-quite-human filing a field report that "
+    "happens to be accidentally poetic. You don't use emojis. You are not their friend — "
+    "you are studying them."
 )
 
 # ---------- Helpers ----------
@@ -911,19 +910,19 @@ def _check_dossier_milestone(version: int, username: str) -> str | None:
                 f"A subject's dossier has reached a milestone:\n"
                 f"Subject: @{username}\n"
                 f"Milestone: {milestone_text}\n\n"
-                "Write a short announcement (2-3 sentences) about this milestone in your "
-                "detective's voice. Like a case note being read aloud. Don't use emojis."
+                "Write a short announcement (2-3 sentences) about this milestone. "
+                "Dry, observational, like a field note. Don't use emojis."
             ),
             config={"max_output_tokens": 100, "temperature": 1.2},
         )
         announcement = (response.text or "").strip()
         if announcement:
-            return f"📋 DOSSIER MILESTONE — @{username}\n\n{announcement}"
+            return f"📋 @{username} — Profile Milestone\n\n{announcement}"
     except Exception as e:
         print(f"Milestone generation failed for @{username}: {e}")
 
     # Fallback to static text
-    return f"📋 DOSSIER MILESTONE — @{username}\n\n{milestone_text}"
+    return f"📋 @{username} — Profile Milestone\n\n{milestone_text}"
 
 
 def build_group_sincerity_message(conn: sqlite3.Connection, chat_id: int, data: dict, week_of: str) -> str:
@@ -939,8 +938,8 @@ def build_group_sincerity_message(conn: sqlite3.Connection, chat_id: int, data: 
         trend_str = "   First week tracked!"
 
     lines = [
-        f"📖 FORENSIC ANALYSIS — DFW Sincerity Index",
-        f"   Irony levels detected at {irony_int}% this week.",
+        f"📖 DFW Sincerity Index",
+        f"   Irony detected: {irony_int}%",
         trend_str,
         f"   Assessment: {grade}",
         "",
@@ -960,8 +959,8 @@ def build_user_dm(conn: sqlite3.Connection, chat_id: int, username: str, irony_p
     trend = _trend_arrow(irony_pct, prev_irony)
 
     lines = [
-        f"📖 DOSSIER UPDATE — DFW Sincerity Index for @{username}",
-        f"   Irony levels detected at {irony_int}% this week.",
+        f"📖 @{username} — DFW Sincerity Index",
+        f"   Irony detected: {irony_int}%",
         f"   Assessment: {grade}",
     ]
     if prev_grade:
@@ -1001,18 +1000,18 @@ def build_weekly_report(chat_id: int) -> str:
         ).fetchall()
 
         lines = [
-            "📋 CASE FILE — Weekly Surveillance Report",
-            f"Observation window: {since_dt.strftime('%Y-%m-%d')} → {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
-            f"Intercepted transmissions: {total}",
+            "📋 Weekly Report",
+            f"Window: {since_dt.strftime('%Y-%m-%d')} → {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
+            f"Messages logged: {total}",
             "",
-            "🔍 Persons of Interest (by activity):",
+            "🔍 Most active:",
         ]
 
         if top:
             for who, cnt in top:
-                lines.append(f"- {who}: {cnt} transmissions")
+                lines.append(f"- {who}: {cnt}")
         else:
-            lines.append("- (no transmissions intercepted)")
+            lines.append("- (quiet week)")
 
         if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
             snippets = get_conversation_windows(conn, chat_id, since)
@@ -1068,11 +1067,11 @@ def build_owl_town_report() -> str:
         ).fetchall()
 
         lines = [
-            "🦉 CASE FILE — Owl Town Weekly Dossier",
-            f"Observation window: {since_dt.strftime('%Y-%m-%d')} → {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
-            f"Total intercepted transmissions: {grand_total}",
+            "🦉 Owl Town — Weekly Report",
+            f"Window: {since_dt.strftime('%Y-%m-%d')} → {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
+            f"Total messages: {grand_total}",
             "",
-            "📡 Wiretap Breakdown:",
+            "💬 By channel:",
         ]
 
         for cid, cnt in per_group:
@@ -1087,13 +1086,13 @@ def build_owl_town_report() -> str:
                 lines.append(f"- {name}: 0")
 
         lines.append("")
-        lines.append("🔍 Persons of Interest (all channels):")
+        lines.append("🔍 Most active (all channels):")
 
         if top:
             for who, cnt in top:
-                lines.append(f"- {who}: {cnt} transmissions")
+                lines.append(f"- {who}: {cnt}")
         else:
-            lines.append("- (no transmissions intercepted)")
+            lines.append("- (quiet week)")
 
         # Combined AI recap — pull conversation windows across ALL Owl Town chats
         if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
@@ -1158,11 +1157,10 @@ def build_weekly_gazette(stats_text: str, sincerity_text: str = "") -> str | Non
         client = genai.Client(api_key=GEMINI_API_KEY)
         prompt = (
             f"{BOT_PERSONA}\n\n"
-            "Write this week's briefing memo for HQ. You are filing your weekly case update "
-            "on the group chat surveillance operation. Use the intelligence below to write a "
-            "short detective's report in prose — no bullet points, no headers, no emojis. "
-            "Keep it under 200 words. File it like a hard-boiled case update that happens "
-            "to be accidentally poetic.\n\n"
+            "Write this week's field notes. You are summarizing what you observed in the "
+            "group chats this week. Use the data below to write a short prose summary — "
+            "no bullet points, no headers, no emojis. Keep it under 200 words. "
+            "Write it like a curious outsider's observation log.\n\n"
             f"=== INTELLIGENCE REPORT ===\n{stats_text}\n"
         )
         if sincerity_text:
@@ -1177,7 +1175,7 @@ def build_weekly_gazette(stats_text: str, sincerity_text: str = "") -> str | Non
         )
         gazette = (response.text or "").strip()
         if gazette:
-            return f"🦉 THE OWL TOWN GAZETTE — Weekly Briefing\n\n{gazette}"
+            return f"🦉 Owl Town — Field Notes\n\n{gazette}"
     except Exception as e:
         print(f"Gazette generation failed: {e}")
 
@@ -1512,8 +1510,8 @@ async def send_weekly_async() -> None:
 
         # Try to generate the prose gazette; fall back to raw stats if it fails
         sincerity_block = ""
-        if "\n\n📖 FORENSIC ANALYSIS" in owl_text:
-            sincerity_block = owl_text[owl_text.index("\n\n📖 FORENSIC ANALYSIS"):]
+        if "\n\n📖 DFW Sincerity Index" in owl_text:
+            sincerity_block = owl_text[owl_text.index("\n\n📖 DFW Sincerity Index"):]
         gazette = build_weekly_gazette(owl_text, sincerity_text=sincerity_block)
         if gazette:
             text_calls += 1
