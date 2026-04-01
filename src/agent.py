@@ -377,6 +377,12 @@ async def tool_send_commentary(conn, chat_id, bot, params):
         commentary = (response.text or "").strip()
         if commentary:
             await bot.send_message(chat_id=chat_id, text=commentary)
+            conn.execute(
+                "INSERT INTO case_notes (chat_id, note_type, target_username, note_text, created_at) "
+                "VALUES (?, 'commentary', NULL, ?, ?);",
+                (chat_id, commentary, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
             return True
         return False
 
@@ -465,12 +471,18 @@ async def tool_illustrated_summary(conn, chat_id, bot, params):
         caption=caption or None,
     )
     if sent_msg.photo:
+        now_iso = datetime.now(timezone.utc).isoformat()
         conn.execute(
             "INSERT INTO weekly_images (chat_id, week_of, image_prompt, telegram_file_id, created_at) "
             "VALUES (?, ?, ?, ?, ?);",
-            (send_to, week_of, image_prompt, sent_msg.photo[-1].file_id,
-             datetime.now(timezone.utc).isoformat()),
+            (send_to, week_of, image_prompt, sent_msg.photo[-1].file_id, now_iso),
         )
+        if caption:
+            conn.execute(
+                "INSERT INTO case_notes (chat_id, note_type, target_username, note_text, created_at) "
+                "VALUES (?, 'observation', NULL, ?, ?);",
+                (send_to, caption, now_iso),
+            )
         conn.commit()
     return True
 
@@ -752,6 +764,14 @@ async def tool_update_casefile(conn, chat_id, bot, params):
         ).fetchone()
         version = version_row[0] if version_row else 1
         generate_case_file_text(conn, target_uid, target_username, profile_text, version)
+
+        # Save as a case note
+        conn.execute(
+            "INSERT INTO case_notes (chat_id, note_type, target_username, note_text, created_at) "
+            "VALUES (?, 'discovery', ?, ?, ?);",
+            (chat_id, target_username, discovery, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
 
         # Announce to the group
         msg = f"🕵️ {announcement}\n\n📋 Check the updated Case File on the /dashboard"

@@ -885,6 +885,47 @@ def save_sincerity_scores(conn: sqlite3.Connection, chat_id: int, week_of: str, 
         )
 
 
+DOSSIER_MILESTONES = {
+    2: "Subject has been under observation for 2 weeks. Initial profile established.",
+    4: "One month of surveillance. Behavioral patterns emerging.",
+    8: "Two months. The detective is starting to understand this one.",
+    13: "Quarter of a year. At this point, the detective knows more about the subject than some of their friends do.",
+    26: "Six months. The case file is thicker than the detective expected.",
+}
+
+
+def _check_dossier_milestone(version: int, username: str) -> str | None:
+    """Return a milestone announcement if this version is a milestone, else None."""
+    milestone_text = DOSSIER_MILESTONES.get(version)
+    if not milestone_text:
+        return None
+
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=(
+                f"{BOT_PERSONA}\n\n"
+                f"A subject's dossier has reached a milestone:\n"
+                f"Subject: @{username}\n"
+                f"Milestone: {milestone_text}\n\n"
+                "Write a short announcement (2-3 sentences) about this milestone in your "
+                "detective's voice. Like a case note being read aloud. Don't use emojis."
+            ),
+            config={"max_output_tokens": 100, "temperature": 1.2},
+        )
+        announcement = (response.text or "").strip()
+        if announcement:
+            return f"📋 DOSSIER MILESTONE — @{username}\n\n{announcement}"
+    except Exception as e:
+        print(f"Milestone generation failed for @{username}: {e}")
+
+    # Fallback to static text
+    return f"📋 DOSSIER MILESTONE — @{username}\n\n{milestone_text}"
+
+
 def build_group_sincerity_message(conn: sqlite3.Connection, chat_id: int, data: dict, week_of: str) -> str:
     """Build the group-facing sincerity message (trend only, no per-user)."""
     group_irony = float(data.get("group_irony_pct", 0))
@@ -898,9 +939,10 @@ def build_group_sincerity_message(conn: sqlite3.Connection, chat_id: int, data: 
         trend_str = "   First week tracked!"
 
     lines = [
-        f"📖 DFW Sincerity Index: {grade}",
-        f"   {irony_int}% irony detected in messages this week.",
+        f"📖 FORENSIC ANALYSIS — DFW Sincerity Index",
+        f"   Irony levels detected at {irony_int}% this week.",
         trend_str,
+        f"   Assessment: {grade}",
         "",
         '   "What passes for hip cynical transcendence of sentiment is really',
         '   some kind of fear of being really human, since to be really human',
@@ -918,8 +960,9 @@ def build_user_dm(conn: sqlite3.Connection, chat_id: int, username: str, irony_p
     trend = _trend_arrow(irony_pct, prev_irony)
 
     lines = [
-        f"📖 Your DFW Sincerity Index: {grade}",
-        f"   {irony_int}% irony detected in your messages this week.",
+        f"📖 DOSSIER UPDATE — DFW Sincerity Index for @{username}",
+        f"   Irony levels detected at {irony_int}% this week.",
+        f"   Assessment: {grade}",
     ]
     if prev_grade:
         lines.append(f"   Last week: {prev_grade} → This week: {grade}. {trend}")
@@ -958,18 +1001,18 @@ def build_weekly_report(chat_id: int) -> str:
         ).fetchall()
 
         lines = [
-            "📆 Weekly chat report",
-            f"Window: {since_dt.strftime('%Y-%m-%d')} → {datetime.now(timezone.utc).strftime('%Y-%m-%d')} (UTC)",
-            f"Total messages logged: {total}",
+            "📋 CASE FILE — Weekly Surveillance Report",
+            f"Observation window: {since_dt.strftime('%Y-%m-%d')} → {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
+            f"Intercepted transmissions: {total}",
             "",
-            "🏆 Top posters:",
+            "🔍 Persons of Interest (by activity):",
         ]
 
         if top:
             for who, cnt in top:
-                lines.append(f"- {who}: {cnt}")
+                lines.append(f"- {who}: {cnt} transmissions")
         else:
-            lines.append("- (no messages logged)")
+            lines.append("- (no transmissions intercepted)")
 
         if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
             snippets = get_conversation_windows(conn, chat_id, since)
@@ -978,7 +1021,7 @@ def build_weekly_report(chat_id: int) -> str:
                 recap = generate_ai_recap(snippets, grounding=grounding)
                 if recap:
                     lines.append("")
-                    lines.append("🤖 AI Recap:")
+                    lines.append("📝 Field Notes:")
                     lines.append(recap)
 
     return "\n".join(lines)
@@ -1025,11 +1068,11 @@ def build_owl_town_report() -> str:
         ).fetchall()
 
         lines = [
-            "🦉 Owl Town Chats — Weekly Report",
-            f"Window: {since_dt.strftime('%Y-%m-%d')} → {datetime.now(timezone.utc).strftime('%Y-%m-%d')} (UTC)",
-            f"Total messages across all chats: {grand_total}",
+            "🦉 CASE FILE — Owl Town Weekly Dossier",
+            f"Observation window: {since_dt.strftime('%Y-%m-%d')} → {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
+            f"Total intercepted transmissions: {grand_total}",
             "",
-            "💬 Per-chat breakdown:",
+            "📡 Wiretap Breakdown:",
         ]
 
         for cid, cnt in per_group:
@@ -1044,13 +1087,13 @@ def build_owl_town_report() -> str:
                 lines.append(f"- {name}: 0")
 
         lines.append("")
-        lines.append("🏆 Top posters (all chats):")
+        lines.append("🔍 Persons of Interest (all channels):")
 
         if top:
             for who, cnt in top:
-                lines.append(f"- {who}: {cnt}")
+                lines.append(f"- {who}: {cnt} transmissions")
         else:
-            lines.append("- (no messages logged)")
+            lines.append("- (no transmissions intercepted)")
 
         # Combined AI recap — pull conversation windows across ALL Owl Town chats
         if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
@@ -1062,10 +1105,83 @@ def build_owl_town_report() -> str:
                 recap = generate_ai_recap(combined_snippets, grounding=grounding)
                 if recap:
                     lines.append("")
-                    lines.append("🤖 AI Recap:")
+                    lines.append("📝 Field Notes:")
                     lines.append(recap)
 
     return "\n".join(lines)
+
+
+def build_weekly_gazette(stats_text: str, sincerity_text: str = "") -> str | None:
+    """Generate a prose 'weekly gazette' from the detective using Gemini.
+
+    Takes the already-assembled stats/recap text and sincerity block,
+    plus any case notes from the week, and produces a ~200-word briefing memo.
+    """
+    if not GEMINI_API_KEY:
+        return None
+
+    # Pull case notes from the last 7 days
+    case_notes_block = ""
+    try:
+        since_dt = datetime.now(timezone.utc) - timedelta(days=7)
+        with sqlite3.connect(DB_PATH) as conn:
+            all_cids = [int(c) for c in OWL_TOWN_CHAT_IDS] if OWL_TOWN_CHAT_IDS else []
+            owl_send_to = int(OWL_TOWN_SEND_TO) if OWL_TOWN_SEND_TO else 0
+            if owl_send_to and owl_send_to not in all_cids:
+                all_cids.append(owl_send_to)
+            placeholders = ",".join("?" * len(all_cids))
+            notes = conn.execute(
+                f"""
+                SELECT note_type, target_username, note_text
+                FROM case_notes
+                WHERE chat_id IN ({placeholders})
+                  AND created_at >= ?
+                ORDER BY created_at DESC
+                LIMIT 15;
+                """,
+                (*all_cids, since_dt.isoformat()),
+            ).fetchall()
+            if notes:
+                parts = []
+                for ntype, target, text in notes:
+                    label = f"[{ntype}]"
+                    if target:
+                        label += f" re: @{target}"
+                    parts.append(f"{label} {text}")
+                case_notes_block = "\nRecent case notes:\n" + "\n".join(parts)
+    except Exception:
+        pass  # case_notes table may not exist yet
+
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        prompt = (
+            f"{BOT_PERSONA}\n\n"
+            "Write this week's briefing memo for HQ. You are filing your weekly case update "
+            "on the group chat surveillance operation. Use the intelligence below to write a "
+            "short detective's report in prose — no bullet points, no headers, no emojis. "
+            "Keep it under 200 words. File it like a hard-boiled case update that happens "
+            "to be accidentally poetic.\n\n"
+            f"=== INTELLIGENCE REPORT ===\n{stats_text}\n"
+        )
+        if sincerity_text:
+            prompt += f"\n{sincerity_text}\n"
+        if case_notes_block:
+            prompt += f"\n{case_notes_block}\n"
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=prompt,
+            config={"max_output_tokens": 300, "temperature": 1.3},
+        )
+        gazette = (response.text or "").strip()
+        if gazette:
+            return f"🦉 THE OWL TOWN GAZETTE — Weekly Briefing\n\n{gazette}"
+    except Exception as e:
+        print(f"Gazette generation failed: {e}")
+
+    return None
 
 
 def _get_system_health() -> str:
@@ -1315,6 +1431,14 @@ async def send_weekly_async() -> None:
                                         irony_pct=float(irony_pct),
                                     )
                                     text_calls += 1  # case file generation
+
+                                    # Check for dossier milestones
+                                    milestone_msg = _check_dossier_milestone(version, display_name)
+                                    if milestone_msg:
+                                        try:
+                                            await bot.send_message(chat_id=chat_id_int, text=milestone_msg)
+                                        except Exception as e:
+                                            print(f"    Milestone announcement failed: {e}")
                             await bot.send_message(chat_id=row[0], text=dm_text)
                             print(f"  DM sent to {display_name} ({row[0]})")
                         except Exception as e:
@@ -1385,7 +1509,19 @@ async def send_weekly_async() -> None:
                         (send_to_int, week_of, owl_image_prompt, sent_msg.photo[-1].file_id,
                          datetime.now(timezone.utc).isoformat()),
                     )
-        await bot.send_message(chat_id=send_to_int, text=owl_text)
+
+        # Try to generate the prose gazette; fall back to raw stats if it fails
+        sincerity_block = ""
+        if "\n\n📖 FORENSIC ANALYSIS" in owl_text:
+            sincerity_block = owl_text[owl_text.index("\n\n📖 FORENSIC ANALYSIS"):]
+        gazette = build_weekly_gazette(owl_text, sincerity_text=sincerity_block)
+        if gazette:
+            text_calls += 1
+            # Send gazette as the main message, stats as a follow-up
+            await bot.send_message(chat_id=send_to_int, text=gazette)
+            await bot.send_message(chat_id=send_to_int, text=owl_text)
+        else:
+            await bot.send_message(chat_id=send_to_int, text=owl_text)
         print(f"Sent Owl Town combined report to {send_to_int}")
 
     # --- Admin cost DM ---

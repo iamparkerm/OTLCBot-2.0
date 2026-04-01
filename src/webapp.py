@@ -279,6 +279,37 @@ def api_watchlist_complete(chat_id: int):
     return jsonify({"ok": True})
 
 
+@app.route("/api/case-notes/<signed_int:chat_id>")
+def api_case_notes(chat_id: int):
+    """Return recent case notes for a chat, newest first."""
+    limit = request.args.get("limit", 50, type=int)
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, note_type, target_username, note_text, created_at
+                FROM case_notes
+                WHERE chat_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?;
+                """,
+                (chat_id, limit),
+            ).fetchall()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    result = []
+    for row_id, note_type, target, text, created_at in rows:
+        result.append({
+            "id": row_id,
+            "note_type": note_type,
+            "target_username": target,
+            "note_text": text,
+            "created_at": created_at,
+        })
+    return jsonify(result)
+
+
 @app.route("/img/<int:image_id>")
 def proxy_image(image_id: int):
     """Proxy a weekly image by its DB id — keeps the bot token server-side."""

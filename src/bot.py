@@ -182,6 +182,21 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_agent_actions_chat ON agent_actions(chat_id, executed_at);"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS case_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                note_type TEXT NOT NULL,
+                target_username TEXT,
+                note_text TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_case_notes_chat ON case_notes(chat_id, created_at);"
+        )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
