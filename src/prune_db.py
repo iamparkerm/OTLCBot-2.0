@@ -1,12 +1,14 @@
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(dotenv_path=ROOT / ".env")
 
-DB_PATH = os.getenv("DB_PATH", "data.db")
+DB_PATH = os.getenv("DB_PATH", str(ROOT / "data.db"))
 # Default retention: 365 days
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "365"))
 # Vacuum can take time; default off unless explicitly enabled
