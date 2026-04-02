@@ -203,6 +203,27 @@ def gather_context(conn: sqlite3.Connection, chat_id: int) -> dict:
     # Group theme
     group_theme = get_group_theme(conn, chat_id)
 
+    # Recent case notes (what the bot has previously observed)
+    prior_notes = []
+    try:
+        notes = conn.execute(
+            """
+            SELECT note_type, target_username, note_text, created_at
+            FROM case_notes
+            WHERE chat_id = ?
+            ORDER BY created_at DESC
+            LIMIT 5;
+            """,
+            (chat_id,),
+        ).fetchall()
+        for ntype, target, text, created_at in notes:
+            entry = f"[{ntype}] {text[:150]}"
+            if target:
+                entry = f"[{ntype}, re: @{target}] {text[:150]}"
+            prior_notes.append(entry)
+    except Exception:
+        pass  # table may not exist yet
+
     return {
         "chat_id": chat_id,
         "current_time_utc": now.isoformat(),
@@ -213,6 +234,7 @@ def gather_context(conn: sqlite3.Connection, chat_id: int) -> dict:
         "open_bets": bets_info,
         "hours_since_last_bot_action": round(hours_since_last, 1),
         "group_theme": group_theme or "(no theme profile yet)",
+        "your_recent_observations": prior_notes or "(none yet)",
     }
 
 
@@ -246,10 +268,11 @@ def build_system_prompt() -> str:
             guideline_lines.append(f"- {name}: {tool['guidelines']}")
 
     return (
-        "You are OTLCBot's decision engine — a hard-boiled AI detective deciding whether "
-        "to intervene in the case or keep watching. You observe a group chat's current state "
+        "You are OTLCBot's decision engine. You observe a group chat's current state "
         "and decide what the bot should do right now. If the chat is active and the bot "
-        "hasn't acted recently, pick an action that fits the moment.\n\n"
+        "hasn't acted recently, pick an action that fits the moment. "
+        "The context includes your_recent_observations — things you've previously said or "
+        "noticed. Use them to avoid repeating yourself and to build on prior observations.\n\n"
         "Available actions:\n"
         + "\n".join(action_lines) + "\n\n"
         "Guidelines:\n"

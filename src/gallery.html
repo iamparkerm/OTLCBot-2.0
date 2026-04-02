@@ -306,6 +306,44 @@
       margin-top: 2px;
     }
 
+    /* Field Notes styles */
+    .note-card {
+      margin: 12px 16px;
+      padding: 14px 16px;
+      border: 1px solid var(--tg-theme-hint-color, #ddd);
+      border-radius: 8px;
+      background: var(--tg-theme-secondary-bg-color, #f8f8f8);
+      border-left: 4px solid var(--tg-theme-link-color, #3390ec);
+    }
+
+    .note-card.discovery {
+      border-left-color: #9c27b0;
+    }
+
+    .note-card.commentary {
+      border-left-color: #4caf50;
+    }
+
+    .note-type {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--tg-theme-hint-color, #888);
+      margin-bottom: 6px;
+    }
+
+    .note-text {
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .note-meta {
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--tg-theme-hint-color, #999);
+    }
+
     /* State messages */
     .state-msg {
       text-align: center;
@@ -331,6 +369,7 @@
       <button id="tab-profiles" onclick="switchTab('profiles')">User Profiles</button>
       <button id="tab-bets" onclick="switchTab('bets')">Bets</button>
       <button id="tab-watchlist" onclick="switchTab('watchlist')">Watch/Read</button>
+      <button id="tab-notes" onclick="switchTab('notes')">Field Notes</button>
     </div>
   </div>
 
@@ -338,6 +377,7 @@
   <div id="profiles" style="display:none"></div>
   <div id="bets" style="display:none"></div>
   <div id="watchlist" style="display:none"></div>
+  <div id="notes" style="display:none"></div>
   <div id="state" class="state-msg"><div class="icon">&#x23F3;</div>Loading...</div>
 
   <script>
@@ -353,17 +393,20 @@
     const stateEl = document.getElementById('state');
     const countEl = document.getElementById('count');
 
+    const notesEl = document.getElementById('notes');
     const tgUser = tg.initDataUnsafe?.user;
 
     let profilesLoaded = false;
     let betsLoaded = false;
     let watchlistLoaded = false;
+    let notesLoaded = false;
     let galleryCount = 0;
     let profilesCount = 0;
     let betsCount = 0;
     let watchlistCount = 0;
+    let notesCount = 0;
 
-    const TABS = ['gallery', 'profiles', 'bets', 'watchlist'];
+    const TABS = ['gallery', 'profiles', 'bets', 'watchlist', 'notes'];
 
     function switchTab(tab) {
       TABS.forEach(t => {
@@ -375,6 +418,7 @@
       if (tab === 'profiles' && !profilesLoaded) loadProfiles();
       if (tab === 'bets' && !betsLoaded) loadBets();
       if (tab === 'watchlist' && !watchlistLoaded) loadWatchlist();
+      if (tab === 'notes' && !notesLoaded) loadNotes();
 
       updateCount(tab);
     }
@@ -388,6 +432,8 @@
         countEl.textContent = betsCount ? betsCount + ' bet' + (betsCount !== 1 ? 's' : '') : '';
       } else if (tab === 'watchlist') {
         countEl.textContent = watchlistCount ? watchlistCount + ' item' + (watchlistCount !== 1 ? 's' : '') : '';
+      } else if (tab === 'notes') {
+        countEl.textContent = notesCount ? notesCount + ' note' + (notesCount !== 1 ? 's' : '') : '';
       }
     }
 
@@ -740,6 +786,53 @@
         }
       })
       .catch(function() { /* silently fail */ });
+    }
+
+    /* ── Field Notes ── */
+    var NOTE_TYPE_LABELS = {
+      'commentary': 'Commentary',
+      'discovery': 'Discovery',
+      'observation': 'Observation'
+    };
+
+    function loadNotes() {
+      notesEl.innerHTML = '<div class="state-msg"><div class="icon">&#x23F3;</div>Loading notes...</div>';
+      fetch('/api/case-notes/' + chatId)
+        .then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function(notes) {
+          notesLoaded = true;
+          notesEl.innerHTML = '';
+
+          if (!notes.length) {
+            notesEl.innerHTML = '<div class="state-msg"><div class="icon">&#x1F4DD;</div>No field notes yet.<br>The bot records observations as it watches the chat.</div>';
+            return;
+          }
+
+          notesCount = notes.length;
+          updateCount('notes');
+
+          notes.forEach(function(n) {
+            var card = document.createElement('div');
+            card.className = 'note-card ' + (n.note_type || '');
+
+            var label = NOTE_TYPE_LABELS[n.note_type] || n.note_type;
+            if (n.target_username) label += ' \u00B7 @' + escHtml(n.target_username);
+
+            var dateStr = n.created_at ? n.created_at.split('T')[0] : '';
+
+            card.innerHTML =
+              '<div class="note-type">' + escHtml(label) + '</div>' +
+              '<div class="note-text">' + escHtml(n.note_text) + '</div>' +
+              '<div class="note-meta">' + dateStr + '</div>';
+            notesEl.appendChild(card);
+          });
+        })
+        .catch(function(err) {
+          notesEl.innerHTML = '<div class="state-msg"><div class="icon">&#x26A0;&#xFE0F;</div>Failed to load notes.<br><small>' + escHtml(err.message) + '</small></div>';
+        });
     }
 
     function escHtml(s) {
