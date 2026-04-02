@@ -504,14 +504,56 @@ def get_group_theme(conn: sqlite3.Connection, chat_id: int) -> str | None:
     return row[0] if row else None
 
 
+def _get_recent_case_notes(conn: sqlite3.Connection, chat_id: int, target_username: str | None = None, limit: int = 10) -> str:
+    """Pull recent case notes for injection into profile/theme prompts.
+
+    If target_username is set, pulls only notes about that user.
+    Otherwise pulls all notes for the chat (group-level observations).
+    """
+    try:
+        since = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+        if target_username:
+            rows = conn.execute(
+                """
+                SELECT note_type, note_text FROM case_notes
+                WHERE chat_id = ? AND target_username = ? AND created_at >= ?
+                ORDER BY created_at DESC LIMIT ?;
+                """,
+                (chat_id, target_username, since, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT note_type, note_text FROM case_notes
+                WHERE chat_id = ? AND created_at >= ?
+                ORDER BY created_at DESC LIMIT ?;
+                """,
+                (chat_id, since, limit),
+            ).fetchall()
+        if rows:
+            return "\n".join(f"[{ntype}] {text[:200]}" for ntype, text in rows)
+    except Exception:
+        pass  # table may not exist yet
+    return ""
+
+
 def update_group_theme(conn: sqlite3.Connection, chat_id: int, snippets: str) -> str:
     """Use Gemini to update the group's theme profile based on this week's snippets."""
     existing = get_group_theme(conn, chat_id)
+    prior_notes = _get_recent_case_notes(conn, chat_id)
 
     try:
         from google import genai
 
         client = genai.Client(api_key=GEMINI_API_KEY)
+
+        notes_section = ""
+        if prior_notes:
+            notes_section = (
+                "\n\nThe bot also recorded these observations during the week:\n\n"
+                f"{prior_notes}\n\n"
+                "Incorporate any relevant patterns from these observations. "
+            )
 
         if existing:
             prompt = (
@@ -519,7 +561,8 @@ def update_group_theme(conn: sqlite3.Connection, chat_id: int, snippets: str) ->
                 "Here is the existing profile:\n\n"
                 f"--- EXISTING PROFILE ---\n{existing}\n--- END PROFILE ---\n\n"
                 "And here are this week's message snippets:\n\n"
-                f"{snippets}\n\n"
+                f"{snippets}"
+                f"{notes_section}\n\n"
                 "Update the profile by integrating any new observations. "
                 "Track: running jokes, recurring references, group dynamics, shared interests, "
                 "notable events, and communication style. "
@@ -536,6 +579,7 @@ def update_group_theme(conn: sqlite3.Connection, chat_id: int, snippets: str) ->
                 "Keep it under 300 words. Write in third person, present tense. "
                 "Output ONLY the profile text.\n\n"
                 f"{snippets}"
+                f"{notes_section}"
             )
 
         response = client.models.generate_content(
@@ -579,10 +623,35 @@ def update_user_profile(conn: sqlite3.Connection, user_id: int, username: str, s
     """Use Gemini to update a user's profile based on this week's snippets."""
     existing = get_user_profile(conn, user_id)
 
+    # Pull discovery notes about this user from any chat
+    user_notes = ""
+    try:
+        since = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+        rows = conn.execute(
+            """
+            SELECT note_type, note_text FROM case_notes
+            WHERE target_username = ? AND created_at >= ?
+            ORDER BY created_at DESC LIMIT 5;
+            """,
+            (username, since),
+        ).fetchall()
+        if rows:
+            user_notes = "\n".join(f"[{ntype}] {text[:200]}" for ntype, text in rows)
+    except Exception:
+        pass
+
     try:
         from google import genai
 
         client = genai.Client(api_key=GEMINI_API_KEY)
+
+        notes_section = ""
+        if user_notes:
+            notes_section = (
+                "\n\nThe bot also recorded these observations about this user during the week:\n\n"
+                f"{user_notes}\n\n"
+                "Incorporate any relevant patterns from these observations. "
+            )
 
         if existing:
             prompt = (
@@ -590,7 +659,8 @@ def update_user_profile(conn: sqlite3.Connection, user_id: int, username: str, s
                 "Here is the existing profile:\n\n"
                 f"--- EXISTING PROFILE ---\n{existing}\n--- END PROFILE ---\n\n"
                 f"And here are @{username}'s messages from this week:\n\n"
-                f"{snippets}\n\n"
+                f"{snippets}"
+                f"{notes_section}\n\n"
                 "Update the profile by integrating any new observations. "
                 "Track: recurring topics, interests, personality traits, communication style, "
                 "humor patterns, and notable opinions. "
@@ -607,6 +677,7 @@ def update_user_profile(conn: sqlite3.Connection, user_id: int, username: str, s
                 "Keep it under 200 words. Write in third person, present tense. "
                 "Output ONLY the profile text.\n\n"
                 f"{snippets}"
+                f"{notes_section}"
             )
 
         response = client.models.generate_content(
