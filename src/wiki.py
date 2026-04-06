@@ -386,33 +386,97 @@ def render_note_card(note_type: str, target: str, text: str, created_at: str,
     )
 
 
-def render_index(channel_data: list[dict], lede: str) -> str:
-    lede_html = f"<p>{html.escape(lede)}</p>" if lede else ""
+def _profile_first_line(case_file_text: str | None, max_len: int = 130) -> str:
+    """Return the first non-empty line of a case file, truncated."""
+    for line in (case_file_text or "").splitlines():
+        line = line.strip()
+        if line:
+            return line[:max_len] + ("…" if len(line) > max_len else "")
+    return ""
 
-    cards = ""
-    for cd in channel_data:
-        name = OWL_TOWN_CHATS.get(cd["chat_id"], cd["chat_id"])
-        slug = name.lower().replace(" ", "-").replace("(", "").replace(")", "")
-        posters = ", ".join(p[0] for p in cd["top_posters"][:3]) or "—"
-        cards += f"""
-        <div class="channel-card">
-          <h3><a href="/channels/{slug}.html">{html.escape(name)}</a></h3>
-          <div class="stat">{cd["msg_7d"]} messages this week</div>
-          <div class="stat">Active: {html.escape(posters)}</div>
-        </div>"""
+
+def _channel_slug(name: str) -> str:
+    return name.lower().replace(" ", "-").replace("(", "").replace(")", "")
+
+
+def render_index(channel_data: list[dict], lede: str,
+                 topics: list[dict] | None = None,
+                 recent_notes: list[tuple] | None = None,
+                 profiles: list[dict] | None = None,
+                 known_usernames: set[str] | None = None) -> str:
+    ku = known_usernames or set()
+
+    # --- Intro / group theme ---
+    if lede:
+        intro_html = f"<p>{html.escape(lede)}</p>"
+    else:
+        home_data = next((cd for cd in channel_data if cd["chat_id"] == OWL_TOWN_HOME), None)
+        if home_data and home_data.get("theme_text"):
+            intro_html = f"<p>{linkify_usernames(html.escape(home_data['theme_text'][:400]), ku)}</p>"
+        else:
+            intro_html = ""
+
+    # --- Recent cross-channel topics ---
+    topics_html = ""
+    if topics:
+        items = "".join(
+            f"<li><strong><a href='/topics.html'>{html.escape(t['title'])}</a></strong>"
+            f" &mdash; {html.escape(t['body'][:120])}{'…' if len(t['body']) > 120 else ''}</li>"
+            for t in topics[:5]
+        )
+        topics_html = f"<h2>Current Topics</h2><ul style='padding-left:24px;margin-bottom:12px'>{items}</ul>"
+
+    # --- Recent field notes (last 6) ---
+    notes_html = ""
+    if recent_notes:
+        cards = "".join(
+            render_note_card(n[1], n[2], n[3], n[4], ku)
+            for n in recent_notes[:6]
+        )
+        notes_html = (
+            f"<h2>Recent Field Notes</h2>{cards}"
+            f"<p style='margin-top:8px;font-size:13px'><a href='/timeline.html'>Full timeline →</a></p>"
+        )
+
+    # --- People cards with one-liner ---
+    people_html = ""
+    if profiles:
+        cards = ""
+        for p in profiles:
+            slug = p["username"].lower()
+            one_liner = _profile_first_line(p.get("case_file_text"))
+            cards += (
+                f'<div class="channel-card" style="padding:10px 14px">'
+                f'<h3 style="font-size:15px;margin:0 0 4px">'
+                f'<a href="/people/{html.escape(slug)}.html">{html.escape(p["username"])}</a></h3>'
+                f'<div class="stat">{html.escape(one_liner)}</div>'
+                f'</div>'
+            )
+        people_html = (
+            f"<h2>People</h2>"
+            f'<div class="channel-grid">{cards}</div>'
+            f"<p style='font-size:13px'><a href='/people/'>All case files →</a></p>"
+        )
+
+    # --- Channels as compact footer nav ---
+    channel_links = " &middot; ".join(
+        f"<a href='/channels/{_channel_slug(OWL_TOWN_CHATS.get(cd['chat_id'], cd['chat_id']))}.html'>"
+        f"{html.escape(OWL_TOWN_CHATS.get(cd['chat_id'], cd['chat_id']))}</a>"
+        for cd in channel_data
+    )
+    channels_html = (
+        f"<h2>Channels</h2>"
+        f"<p>{channel_links} &middot; <a href='/channels/'>index</a></p>"
+        f"<p style='font-size:13px;margin-top:8px'>"
+        f"<a href='/sincerity.html'>Sincerity Tracker</a></p>"
+    )
 
     body = f"""
-{lede_html}
-<h2>Channels</h2>
-<div class="channel-grid">{cards}
-</div>
-<h2>See also</h2>
-<ul style="padding-left:24px">
-  <li><a href="/people/">People</a> &mdash; Case file dossiers for active members</li>
-  <li><a href="/topics.html">Topics</a> &mdash; Recurring cross-channel themes</li>
-  <li><a href="/timeline.html">Timeline</a> &mdash; Chronological field observations</li>
-  <li><a href="/sincerity.html">Sincerity Tracker</a> &mdash; Weekly irony scores</li>
-</ul>"""
+{intro_html}
+{topics_html}
+{notes_html}
+{people_html}
+{channels_html}"""
     return render_page("Owl Town", "<a href='/'>Owl Town</a>", body)
 
 
@@ -445,13 +509,19 @@ def render_channel_page(chat_id: str, data: dict, article: str,
 
     posters_html = ""
     if posters_rows:
-        posters_html = f"""<h2>Top Posters (30 days)</h2>
-<table><tr><th>Username</th><th>Messages</th></tr>{posters_rows}</table>"""
+        posters_html = (
+            f'<details style="margin-top:24px"><summary style="cursor:pointer;color:#555;font-size:13px">'
+            f'Activity stats</summary>'
+            f'<div style="margin-top:8px"><p style="font-size:13px;color:#555">'
+            f'{data["msg_7d"]} messages this week</p>'
+            f'<table style="margin-top:6px"><tr><th>Username</th><th>Messages (30 days)</th></tr>'
+            f'{posters_rows}</table></div></details>'
+        )
 
     body = f"""
 {article_html}
-{posters_html}
-{notes_html}"""
+{notes_html}
+{posters_html}"""
 
     return render_page(
         name,
@@ -480,19 +550,19 @@ def render_channels_index(channel_data: list[dict]) -> str:
 
 
 def render_people_index(profiles: list[dict]) -> str:
-    rows = ""
+    cards = ""
     for p in profiles:
-        username = p["username"]
-        slug = username.lower()
-        version = p["version"]
-        updated = _fmt_date(p["updated_at"])
-        rows += f"<tr><td><a href='/people/{slug}.html'>{html.escape(username)}</a></td><td>v{version}</td><td>{updated}</td></tr>"
-
-    body = f"""
-<table>
-<tr><th>Subject</th><th>Profile version</th><th>Last updated</th></tr>
-{rows}
-</table>"""
+        slug = p["username"].lower()
+        one_liner = _profile_first_line(p.get("case_file_text"), max_len=150)
+        cards += (
+            f'<div class="channel-card" style="padding:10px 14px">'
+            f'<h3 style="font-size:15px;margin:0 0 4px">'
+            f'<a href="/people/{html.escape(slug)}.html">{html.escape(p["username"])}</a></h3>'
+            f'<div class="stat">{html.escape(one_liner)}</div>'
+            f'<div class="updated">v{p["version"]} &middot; {_fmt_date(p["updated_at"])}</div>'
+            f'</div>'
+        )
+    body = f'<div class="channel-grid">{cards}</div>'
     return render_page(
         "People",
         "<a href='/'>Owl Town</a> &rsaquo; People",
@@ -673,7 +743,13 @@ def build_wiki(gemini_enabled: bool = True) -> int:
     # --- Render and write pages ---
 
     # Index
-    write_page(WIKI_DIR / "index.html", render_index(channel_data, lede))
+    write_page(WIKI_DIR / "index.html", render_index(
+        channel_data, lede,
+        topics=topics,
+        recent_notes=timeline_entries[:7],
+        profiles=profiles,
+        known_usernames=known_usernames,
+    ))
     pages += 1
 
     # Channels index
