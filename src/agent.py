@@ -301,6 +301,7 @@ def reason(context: dict) -> dict:
             f"Hours since last bot action: {context['hours_since_last_bot_action']}\n"
             f"Open bets: {json.dumps(context['open_bets']) if context['open_bets'] else 'none'}\n"
             f"\nGroup personality: {context['group_theme']}\n"
+            f"\nYour recent observations:\n{context['your_recent_observations']}\n"
             f"\nRecent messages:\n" + "\n".join(context['recent_messages'][-10:])
         )
 

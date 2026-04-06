@@ -491,6 +491,21 @@ def _ensure_profile_tables(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_weekly_images_chat_week ON weekly_images(chat_id, week_of);"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS case_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            note_type TEXT NOT NULL,
+            target_username TEXT,
+            note_text TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_case_notes_chat_created ON case_notes(chat_id, created_at);"
+    )
 
 
 def get_group_theme(conn: sqlite3.Connection, chat_id: int) -> str | None:
