@@ -781,6 +781,76 @@ async def tool_update_casefile(conn, chat_id, bot, params):
         return False
 
 
+@register_tool(
+    name="silent_observation",
+    description="Record an internal observation about the group or a specific user without posting anything to chat.",
+    guidelines="Use when you notice something worth remembering but the moment doesn't call for a public comment — "
+               "a pattern emerging, a recurring topic, an interesting dynamic. This is how you learn quietly. "
+               "Prefer this over send_commentary when the insight is subtle or would feel intrusive if said aloud. "
+               "Can fire more frequently than speaking tools since it has no chat footprint.",
+    cost=0.0,
+)
+async def tool_silent_observation(conn, chat_id, bot, params):
+    """Write a case note without sending anything to the group."""
+    try:
+        from google import genai
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+        recent = conn.execute(
+            """
+            SELECT COALESCE(username, full_name, 'unknown') AS who, text
+            FROM messages
+            WHERE chat_id = ? AND text IS NOT NULL AND LENGTH(TRIM(text)) >= 5
+            ORDER BY sent_at_utc DESC LIMIT 20;
+            """,
+            (chat_id,),
+        ).fetchall()
+        snippets = "\n".join(f"{who}: {text[:200]}" for who, text in reversed(recent) if text)
+
+        theme = get_group_theme(conn, chat_id) or ""
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=(
+                f"{BOT_PERSONA}\n\n"
+                "You are filing an internal observation — something you've noticed that is worth "
+                "remembering but does not need to be said aloud. This note will be stored in your "
+                "case files and influence your future reasoning, but the group will never see it.\n\n"
+                "Respond with ONLY valid JSON:\n"
+                '{"target_username": "<username if about one person, or null if group-level>", '
+                '"note": "<1-2 sentence observation, written in your voice>"}\n\n'
+                f"Group personality: {theme}\n\n"
+                f"Recent messages:\n{snippets}"
+            ),
+            config={"max_output_tokens": 120, "temperature": 1.2},
+        )
+
+        raw = (response.text or "").strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+        result = json.loads(raw)
+        note = result.get("note", "").strip()
+        target = result.get("target_username") or None
+
+        if not note:
+            return False
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "INSERT INTO case_notes (chat_id, note_type, target_username, note_text, created_at) "
+            "VALUES (?, 'observation', ?, ?, ?);",
+            (chat_id, target, note, now_iso),
+        )
+        conn.commit()
+        print(f"  silent_observation: filed note{f' about @{target}' if target else ''} — {note[:80]}")
+        return True
+
+    except Exception as e:
+        print(f"  silent_observation failed: {e}")
+        return False
+
+
 # ============================================================
 # Agent loop
 # ============================================================

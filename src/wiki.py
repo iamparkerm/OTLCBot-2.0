@@ -349,6 +349,19 @@ Write the intro now."""
 # HTML render functions
 # ============================================================
 
+def linkify_usernames(text: str, known_usernames: set[str]) -> str:
+    """Replace known usernames in already-escaped HTML text with links to their people page.
+    Matches bare usernames and @username mentions, case-insensitively."""
+    import re
+    result = text
+    for username in sorted(known_usernames, key=len, reverse=True):  # longest first avoids partial matches
+        slug = username.lower()
+        pattern = re.compile(r'(?<![/@\w])@?' + re.escape(html.escape(username)) + r'(?![\w])', re.IGNORECASE)
+        replacement = f'<a href="/people/{slug}.html">{html.escape(username)}</a>'
+        result = pattern.sub(replacement, result)
+    return result
+
+
 def _fmt_date(iso: str) -> str:
     try:
         return iso[:10]
@@ -356,11 +369,18 @@ def _fmt_date(iso: str) -> str:
         return iso or ""
 
 
-def render_note_card(note_type: str, target: str, text: str, created_at: str) -> str:
-    target_str = f" &mdash; <em>re: {html.escape(target)}</em>" if target else ""
+def render_note_card(note_type: str, target: str, text: str, created_at: str,
+                     known_usernames: set[str] | None = None) -> str:
+    if target and known_usernames and target in known_usernames:
+        target_str = f" &mdash; <em>re: <a href='/people/{html.escape(target.lower())}.html'>{html.escape(target)}</a></em>"
+    elif target:
+        target_str = f" &mdash; <em>re: {html.escape(target)}</em>"
+    else:
+        target_str = ""
+    note_html = linkify_usernames(html.escape(text), known_usernames or set())
     return (
         f'<div class="note-card {html.escape(note_type)}">'
-        f"{html.escape(text)}"
+        f"{note_html}"
         f'<div class="note-meta">{html.escape(note_type)}{target_str} &middot; {_fmt_date(created_at)}</div>'
         f"</div>"
     )
@@ -396,23 +416,31 @@ def render_index(channel_data: list[dict], lede: str) -> str:
     return render_page("Owl Town", "<a href='/'>Owl Town</a>", body)
 
 
-def render_channel_page(chat_id: str, data: dict, article: str) -> str:
+def render_channel_page(chat_id: str, data: dict, article: str,
+                        known_usernames: set[str] | None = None) -> str:
     name = OWL_TOWN_CHATS.get(chat_id, chat_id)
+    ku = known_usernames or set()
+
+    def poster_cell(username: str) -> str:
+        if username in ku:
+            return f'<a href="/people/{html.escape(username.lower())}.html">{html.escape(username)}</a>'
+        return html.escape(username)
+
     posters_rows = "".join(
-        f"<tr><td>{html.escape(p[0])}</td><td>{p[1]}</td></tr>"
+        f"<tr><td>{poster_cell(p[0])}</td><td>{p[1]}</td></tr>"
         for p in data["top_posters"]
     )
 
     article_html = ""
     if article:
-        article_html = f"<h2>Profile</h2><p>{html.escape(article)}</p>"
+        article_html = f"<h2>Profile</h2><p>{linkify_usernames(html.escape(article), ku)}</p>"
     elif data["theme_text"]:
-        article_html = f"<h2>Group Theme</h2><pre>{html.escape(data['theme_text'])}</pre>"
+        article_html = f"<h2>Group Theme</h2><pre>{linkify_usernames(html.escape(data['theme_text']), ku)}</pre>"
 
     notes_html = ""
     if data["notes"]:
         notes_html = "<h2>Recent Field Notes</h2>" + "".join(
-            render_note_card(n[0], n[1], n[2], n[3]) for n in data["notes"]
+            render_note_card(n[0], n[1], n[2], n[3], ku) for n in data["notes"]
         )
 
     posters_html = ""
@@ -500,14 +528,15 @@ def render_person_page(profile: dict, sincerity_rows: list) -> str:
     )
 
 
-def render_topics_page(topics: list[dict]) -> str:
+def render_topics_page(topics: list[dict], known_usernames: set[str] | None = None) -> str:
     if not topics:
         body = "<p>No cross-channel topics compiled yet. Check back after the next weekly run.</p>"
         return render_page("Topics", "<a href='/'>Owl Town</a> &rsaquo; Topics", body)
 
+    ku = known_usernames or set()
     sections = ""
     for t in topics:
-        sections += f"<h2>{html.escape(t['title'])}</h2><p>{html.escape(t['body'])}</p>\n"
+        sections += f"<h2>{html.escape(t['title'])}</h2><p>{linkify_usernames(html.escape(t['body']), ku)}</p>\n"
 
     return render_page(
         "Topics",
@@ -516,18 +545,24 @@ def render_topics_page(topics: list[dict]) -> str:
     )
 
 
-def render_timeline(entries: list[tuple]) -> str:
+def render_timeline(entries: list[tuple], known_usernames: set[str] | None = None) -> str:
     if not entries:
         body = "<p>No field observations recorded yet.</p>"
         return render_page("Timeline", "<a href='/'>Owl Town</a> &rsaquo; Timeline", body)
 
+    ku = known_usernames or set()
     cards = ""
     for chat_id, note_type, target, text, created_at in entries:
         channel = OWL_TOWN_CHATS.get(str(chat_id), str(chat_id))
-        target_str = f" &mdash; <em>re: {html.escape(target)}</em>" if target else ""
+        if target and target in ku:
+            target_str = f" &mdash; <em>re: <a href='/people/{html.escape(target.lower())}.html'>{html.escape(target)}</a></em>"
+        elif target:
+            target_str = f" &mdash; <em>re: {html.escape(target)}</em>"
+        else:
+            target_str = ""
         cards += (
             f'<div class="note-card {html.escape(note_type)}">'
-            f"{html.escape(text)}"
+            f"{linkify_usernames(html.escape(text), ku)}"
             f'<div class="note-meta">{html.escape(channel)} &middot; '
             f"{html.escape(note_type)}{target_str} &middot; {_fmt_date(created_at)}</div>"
             f"</div>\n"
@@ -632,6 +667,9 @@ def build_wiki(gemini_enabled: bool = True) -> int:
     finally:
         conn.close()
 
+    # Build the set of known usernames for backlink resolution
+    known_usernames: set[str] = {p["username"] for p in profiles if p["username"]}
+
     # --- Render and write pages ---
 
     # Index
@@ -649,7 +687,7 @@ def build_wiki(gemini_enabled: bool = True) -> int:
         article = channel_articles.get(cd["chat_id"], "")
         write_page(
             WIKI_DIR / "channels" / f"{slug}.html",
-            render_channel_page(cd["chat_id"], cd, article),
+            render_channel_page(cd["chat_id"], cd, article, known_usernames),
         )
         pages += 1
 
@@ -668,11 +706,11 @@ def build_wiki(gemini_enabled: bool = True) -> int:
         pages += 1
 
     # Topics
-    write_page(WIKI_DIR / "topics.html", render_topics_page(topics))
+    write_page(WIKI_DIR / "topics.html", render_topics_page(topics, known_usernames))
     pages += 1
 
     # Timeline
-    write_page(WIKI_DIR / "timeline.html", render_timeline(timeline_entries))
+    write_page(WIKI_DIR / "timeline.html", render_timeline(timeline_entries, known_usernames))
     pages += 1
 
     # Sincerity
