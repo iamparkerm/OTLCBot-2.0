@@ -461,37 +461,11 @@ async def tool_illustrated_summary(conn, chat_id, bot, params):
     if not image_bytes:
         return False
 
-    # Generate a witty caption to go with the image
-    try:
-        from google import genai
-        client = genai.Client(api_key=GEMINI_API_KEY)
-
-        grounding_block = f"\n{grounding}\n\n" if grounding else "\n"
-        response = client.models.generate_content(
-            model="gemini-2.5-flash-lite",
-            contents=(
-                f"{BOT_PERSONA}\n\n"
-                "Write a SHORT caption (2-3 sentences max) for a surveillance sketch of the subjects. "
-                "It should read like a weary detective's note clipped to a case photo. Be funny and "
-                "specific to what people actually talked about. Don't explain the image — riff on "
-                "the conversations.\n\n"
-                f"Group personality: {theme_context}\n"
-                f"{grounding_block}"
-                f"Conversations:\n{snippets[:2500]}"
-            ),
-            config={"max_output_tokens": 100, "temperature": 1.4},
-        )
-        caption = (response.text or "").strip()
-    except Exception as e:
-        print(f"  Caption generation failed: {e}")
-        caption = ""
-
-    # Send image + caption together
+    # Send image alone — no caption (weekly report follows immediately after)
     week_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     sent_msg = await bot.send_photo(
         chat_id=send_to,
         photo=io.BytesIO(image_bytes),
-        caption=caption or None,
     )
     if sent_msg.photo:
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -500,12 +474,11 @@ async def tool_illustrated_summary(conn, chat_id, bot, params):
             "VALUES (?, ?, ?, ?, ?);",
             (send_to, week_of, image_prompt, sent_msg.photo[-1].file_id, now_iso),
         )
-        if caption:
-            conn.execute(
-                "INSERT INTO case_notes (chat_id, note_type, target_username, note_text, created_at) "
-                "VALUES (?, 'observation', NULL, ?, ?);",
-                (send_to, caption, now_iso),
-            )
+        conn.execute(
+            "INSERT INTO case_notes (chat_id, note_type, target_username, note_text, created_at) "
+            "VALUES (?, 'observation', NULL, ?, ?);",
+            (send_to, image_prompt[:500], now_iso),
+        )
         conn.commit()
     return True
 

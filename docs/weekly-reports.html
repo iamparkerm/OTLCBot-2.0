@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weekly Reports — OTLCBot Wiki</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Liberation Sans", sans-serif; font-size: 15px; line-height: 1.7; color: #222; background: #f8f9fa; }
+    .page { max-width: 820px; margin: 0 auto; background: #fff; min-height: 100vh; border-left: 1px solid #e0e0e0; border-right: 1px solid #e0e0e0; padding: 32px 40px 60px; }
+    h1 { font-size: 28px; font-weight: 400; border-bottom: 1px solid #a2a9b1; padding-bottom: 4px; margin-bottom: 12px; font-family: "Linux Libertine", "Georgia", serif; }
+    h2 { font-size: 20px; font-weight: 400; border-bottom: 1px solid #a2a9b1; padding-bottom: 2px; margin-top: 28px; margin-bottom: 10px; font-family: "Linux Libertine", "Georgia", serif; }
+    h3 { font-size: 16px; font-weight: 600; margin-top: 18px; margin-bottom: 6px; }
+    p { margin-bottom: 10px; }
+    a { color: #0645ad; text-decoration: none; } a:hover { text-decoration: underline; }
+    a.wikilink { color: #15803d; } .w-tag { font-size: 10px; color: #15803d; vertical-align: super; margin-left: 1px; font-style: italic; }
+    code { font-family: "Consolas", "Liberation Mono", monospace; font-size: 13px; background: #f0f0f0; padding: 1px 4px; border-radius: 2px; }
+    pre { background: #f0f0f0; padding: 14px 16px; border-radius: 4px; font-size: 13px; overflow-x: auto; margin: 10px 0 16px; line-height: 1.5; font-family: "Consolas", "Liberation Mono", monospace; }
+    table { border-collapse: collapse; margin: 10px 0 16px; font-size: 14px; width: 100%; }
+    th, td { border: 1px solid #a2a9b1; padding: 6px 10px; text-align: left; vertical-align: top; }
+    th { background: #eaecf0; font-weight: 600; }
+    tr:nth-child(even) { background: #f8f9fa; }
+    .breadcrumb { font-size: 13px; color: #555; margin-bottom: 8px; }
+    .see-also { list-style: disc; padding-left: 24px; } .see-also li { margin: 4px 0; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="breadcrumb"><a href="wiki.html">OTLCBot</a> &rsaquo; Weekly Reports</div>
+    <h1>Weekly Reports</h1>
+
+    <p>Every Friday at 3pm EST, a cron job runs <code>src/weekly.py</code>, which executes the full reporting pipeline. This is the most Gemini-intensive operation in the system, typically making 10&ndash;20 API calls per run. The pipeline handles per-chat reports, sincerity analysis, image generation, user profile updates, and the Owl Town combined report.</p>
+
+    <h2>Pipeline Sequence</h2>
+
+    <p>For each monitored chat (except those covered by the Owl Town combined report):</p>
+
+    <table>
+      <tr><th>Step</th><th>What happens</th><th>Gemini calls</th></tr>
+      <tr><td>1. Build report</td><td>Count messages, rank posters, generate AI recap via conversation burst detection</td><td>1 (recap)</td></tr>
+      <tr><td>2. Sincerity index</td><td>Analyze irony/sincerity ratio, score each user, calculate group grade</td><td>1</td></tr>
+      <tr><td>3. Update group theme</td><td>Merge this week's conversations + case notes into rolling group personality</td><td>1</td></tr>
+      <tr><td>4. Generate image</td><td>Two-step: summarize conversations into a scene, then generate cartoon</td><td>2</td></tr>
+      <tr><td>5. Send report</td><td>Post image + text report to chat</td><td>0</td></tr>
+      <tr><td>6. User profiles</td><td>For each active user: update rolling profile, regenerate case file dossier</td><td>2 per user</td></tr>
+      <tr><td>7. Send DMs</td><td>DM each user their individual sincerity score + trend</td><td>0</td></tr>
+    </table>
+
+    <h2>Conversation Burst Detection</h2>
+
+    <p>Rather than sampling random messages (which tends to produce incoherent, context-free snippets), the system identifies <strong>conversation bursts</strong> &mdash; clusters of messages sent within a short time window of each other. This is a practical application of <a class="wikilink" href="https://en.wikipedia.org/wiki/Retrieval-augmented_generation">RAG</a><span class="w-tag">(w)</span>, where the retrieval step is designed to preserve conversational coherence.</p>
+
+    <p>The algorithm (<code>_detect_bursts()</code>) works by scanning messages chronologically and splitting into groups whenever the gap between consecutive messages exceeds a threshold (default: 10 minutes). Bursts smaller than 3 messages are discarded. The remaining bursts are formatted with usernames and timestamps, then truncated to fit within a character budget. This produces representative conversation excerpts that the LLM can actually understand in context.</p>
+
+    <h2>DFW Sincerity Index</h2>
+
+    <p>The sincerity index is a <a class="wikilink" href="https://en.wikipedia.org/wiki/Sentiment_analysis">sentiment analysis</a><span class="w-tag">(w)</span> system themed around David Foster Wallace's writing on irony and sincerity. Gemini analyzes a sample of the week's messages and returns a JSON object with an irony percentage for each user and the group as a whole.</p>
+
+    <h3>Scoring</h3>
+    <table>
+      <tr><th>Grade</th><th>Irony %</th><th>Label</th></tr>
+      <tr><td>A</td><td>0&ndash;7%</td><td>Earnest</td></tr>
+      <tr><td>B</td><td>8&ndash;24%</td><td>Mostly Sincere</td></tr>
+      <tr><td>C</td><td>25&ndash;44%</td><td>Balanced</td></tr>
+      <tr><td>D</td><td>45&ndash;69%</td><td>Leaning Ironic</td></tr>
+      <tr><td>F</td><td>70&ndash;100%</td><td>Fully Ironic</td></tr>
+    </table>
+
+    <h3>Trend Tracking</h3>
+    <p>Scores are saved to the <code>sincerity_scores</code> table each week. The bot compares the current week's score to the previous week and shows a trend arrow in the DM: rising irony, falling irony, or stable. The group message shows only the aggregate grade and trend &mdash; individual scores are private.</p>
+
+    <h2>Image Generation</h2>
+
+    <p>Weekly cartoons are generated in two steps, a common pattern when using multimodal LLMs:</p>
+
+    <p><strong>Step 1: Scene description.</strong> Gemini (<code>gemini-2.5-flash-lite</code>) reads the conversation windows and group theme, then writes a short scene description suitable for image generation &mdash; essentially translating chat content into a visual concept.</p>
+
+    <p><strong>Step 2: Image generation.</strong> Gemini (<code>gemini-2.5-flash-image</code>) generates the cartoon from the scene description. The result is sent to the chat and the Telegram file ID is saved for the dashboard gallery.</p>
+
+    <h2>Owl Town Combined Report</h2>
+
+    <p>After individual chat reports are sent, the pipeline aggregates all Owl Town sub-chats into a single combined report. This uses <code>get_conversation_windows_multi()</code>, which pulls burst-detected conversation windows from every sub-chat and labels them by channel name.</p>
+
+    <p>The combined report includes a per-channel message breakdown, top posters across all channels, a combined AI recap, and a combined sincerity index.</p>
+
+    <h3>The Gazette</h3>
+    <p>In addition to the structured report, the bot generates a prose <strong>gazette</strong> via <code>build_weekly_gazette()</code>. This takes the assembled statistics, sincerity scores, and any case notes from the week and asks Gemini to write a ~200-word field report in the bot's observational voice. The gazette is sent as the lead message before the structured stats, giving the Owl Town report a more narrative feel.</p>
+
+    <h2>Admin Cost DM</h2>
+
+    <p>After all reports are sent, the bot DMs the admin user with a cost summary. This includes the number of images generated, the number of text API calls, the estimated cost for this run, the projected monthly cost, and Pi system health metrics (CPU temperature, memory usage, disk space, load average, uptime). Cost tracking is important in LLM-powered applications where usage-based pricing can be unpredictable.</p>
+
+    <h2>See also</h2>
+    <ul class="see-also">
+      <li><a href="memory-system.html">Memory System</a> &mdash; How weekly updates consolidate short-term observations</li>
+      <li><a href="agent-system.html">Agent System</a> &mdash; Mid-week agent actions vs. Friday pipeline</li>
+      <li><a href="wiki.html">Main article</a></li>
+    </ul>
+  </div>
+</body>
+</html>

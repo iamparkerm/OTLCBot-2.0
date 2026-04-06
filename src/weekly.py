@@ -406,14 +406,12 @@ def generate_weekly_image(snippets: str, context: str = "", retries: int = 2) ->
             return None, None
         image_prompt = (
             f"{scene}\n\n"
-            "Generate a single-panel cartoon in the signature style of The New Yorker, "
-            "using a monochrome palette (black, white, and a light ink wash). "
-            "The drawing should use loose, expressive lines. Render one complex, detailed scene "
-            "that visually combines or satirizes the key topics identified above (e.g., perhaps "
-            "showing characters in an absurd situation that references multiple chat discussions at once). "
-            "CRITICAL: Limit any dialogue or speech bubbles. Do NOT include a caption beneath the image. "
-            "The humor and narrative must be conveyed through the visual composition and the expressions "
-            "of the characters."
+            "Generate a single-panel cartoon in the style of a New Yorker illustration: "
+            "clean ink lines, minimal shading, lots of white space, sparse composition. "
+            "Show ONE clear scene with no more than 2-3 figures. "
+            "ABSOLUTE RULES: zero speech bubbles, zero thought bubbles, zero text of any kind "
+            "inside the image, zero caption below. The entire joke must be told through the "
+            "visual scene alone — expressions, body language, and what the characters are doing."
         )
         print(f"  Scene summary: {scene}")
 
@@ -1013,11 +1011,6 @@ def build_group_sincerity_message(conn: sqlite3.Connection, chat_id: int, data: 
         f"   Irony detected: {irony_int}%",
         trend_str,
         f"   Assessment: {grade}",
-        "",
-        '   "What passes for hip cynical transcendence of sentiment is really',
-        '   some kind of fear of being really human, since to be really human',
-        '   is probably to be unavoidably sentimental and naïve and goo-prone."',
-        '   — Infinite Jest',
     ]
     return "\n".join(lines)
 
@@ -1038,13 +1031,6 @@ def build_user_dm(conn: sqlite3.Connection, chat_id: int, username: str, irony_p
         lines.append(f"   Last week: {prev_grade} → This week: {grade}. {trend}")
     else:
         lines.append(f"   {trend}")
-    lines.append("")
-    lines.append(
-        '   "What passes for hip cynical transcendence of sentiment is really\n'
-        '   some kind of fear of being really human, since to be really human\n'
-        '   is probably to be unavoidably sentimental and naïve and goo-prone."\n'
-        '   — Infinite Jest'
-    )
     return "\n".join(lines)
 
 
@@ -1372,7 +1358,13 @@ async def _send_cost_dm(bot, images_sent: int, text_calls: int) -> None:
         print(f"  Cost DM failed: {e}")
 
 
-async def send_weekly_async() -> None:
+async def send_weekly_async(group: str = "all") -> None:
+    """
+    group: "all" (default), "owltown", or "penetr8in"
+    owltown  — runs Owl Town combined report only; no cost DM, no wiki rebuild
+    penetr8in — runs standalone chat reports only; runs cost DM and wiki rebuild
+    all      — runs everything in sequence (original behaviour)
+    """
     if not TOKEN:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in .env")
     if not CHAT_IDS:
@@ -1390,7 +1382,7 @@ async def send_weekly_async() -> None:
     # Skip individual reports for chats that will get the Owl Town combined report
     owl_town_send_to_int = int(OWL_TOWN_SEND_TO) if OWL_TOWN_SEND_TO else None
 
-    for chat_id_str in CHAT_IDS:
+    for chat_id_str in (CHAT_IDS if group in ("all", "penetr8in") else []):
         chat_id_int = int(chat_id_str)
 
         # This chat gets the combined Owl Town report instead
@@ -1514,7 +1506,7 @@ async def send_weekly_async() -> None:
                             print(f"  DM to {display_name} failed: {e}")
 
     # --- Owl Town combined report ---
-    if OWL_TOWN_CHAT_IDS and OWL_TOWN_SEND_TO:
+    if group in ("all", "owltown") and OWL_TOWN_CHAT_IDS and OWL_TOWN_SEND_TO:
         owl_text = build_owl_town_report()
 
         # Sincerity index across all Owl Town chats
@@ -1593,15 +1585,27 @@ async def send_weekly_async() -> None:
             await bot.send_message(chat_id=send_to_int, text=owl_text)
         print(f"Sent Owl Town combined report to {send_to_int}")
 
-    # --- Admin cost DM ---
-    await _send_cost_dm(bot, images_sent, text_calls)
+    # --- Admin cost DM + wiki rebuild (only after penetr8in or full run) ---
+    if group in ("all", "penetr8in"):
+        await _send_cost_dm(bot, images_sent, text_calls)
+        try:
+            import wiki as wiki_module
+            wiki_module.build_wiki(gemini_enabled=bool(GEMINI_API_KEY))
+        except Exception as e:
+            print(f"[weekly] Wiki build failed (non-fatal): {e}")
 
 
 def main() -> None:
-    # The Friday cron always runs the full weekly report via send_weekly_async().
-    # The agent's illustrated_summary tool is a separate, organic mid-week action
-    # that fires on its own when the agent decides the chat is interesting enough.
-    asyncio.run(send_weekly_async())
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--group",
+        choices=["all", "owltown", "penetr8in"],
+        default="all",
+        help="Which group to run: all (default), owltown, or penetr8in",
+    )
+    args = parser.parse_args()
+    asyncio.run(send_weekly_async(group=args.group))
 
 
 if __name__ == "__main__":

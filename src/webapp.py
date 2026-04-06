@@ -21,6 +21,7 @@ load_dotenv(dotenv_path=ROOT / ".env")
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DB_PATH = os.getenv("DB_PATH", str(ROOT / "data.db"))
 SRC_DIR = Path(__file__).parent
+WIKI_DIR = Path(os.getenv("WIKI_DIR", "/opt/otlc/wiki"))
 
 app = Flask(__name__)
 
@@ -44,8 +45,42 @@ _CACHE_TTL = 3600  # Telegram file paths are valid ~1 hour
 
 
 @app.route("/")
-def index():
+def wiki_index():
+    if WIKI_DIR.exists():
+        return send_from_directory(WIKI_DIR, "index.html")
     return send_from_directory(SRC_DIR, "gallery.html")
+
+
+@app.route("/wiki/<path:filename>")
+def wiki_static(filename):
+    if not WIKI_DIR.exists():
+        abort(404)
+    return send_from_directory(WIKI_DIR, filename)
+
+
+@app.route("/<path:filename>")
+def wiki_catch_all(filename):
+    """Serve any path from WIKI_DIR, handling both files and directory index pages."""
+    if not WIKI_DIR.exists():
+        abort(404)
+    target = WIKI_DIR / filename
+    if target.is_file():
+        return send_from_directory(WIKI_DIR, filename)
+    # Try as a directory index
+    index = target / "index.html"
+    if index.is_file():
+        return send_from_directory(WIKI_DIR, str(Path(filename) / "index.html"))
+    abort(404)
+
+
+@app.route("/dashboard")
+def dashboard_app():
+    return send_from_directory(SRC_DIR, "gallery.html")
+
+
+@app.route("/robots.txt")
+def robots_txt():
+    return Response("User-agent: *\nDisallow: /\n", mimetype="text/plain")
 
 
 @app.route("/api/images/<signed_int:chat_id>")

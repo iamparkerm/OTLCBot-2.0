@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OTLCBot — Wiki</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Liberation Sans", sans-serif; font-size: 15px; line-height: 1.7; color: #222; background: #f8f9fa; }
+    .page { max-width: 820px; margin: 0 auto; background: #fff; min-height: 100vh; border-left: 1px solid #e0e0e0; border-right: 1px solid #e0e0e0; padding: 32px 40px 60px; }
+    h1 { font-size: 28px; font-weight: 400; border-bottom: 1px solid #a2a9b1; padding-bottom: 4px; margin-bottom: 12px; font-family: "Linux Libertine", "Georgia", serif; }
+    h2 { font-size: 20px; font-weight: 400; border-bottom: 1px solid #a2a9b1; padding-bottom: 2px; margin-top: 28px; margin-bottom: 10px; font-family: "Linux Libertine", "Georgia", serif; }
+    p { margin-bottom: 10px; }
+    a { color: #0645ad; text-decoration: none; } a:hover { text-decoration: underline; }
+    a.wikilink { color: #15803d; }
+    .w-tag { font-size: 10px; color: #15803d; vertical-align: super; margin-left: 1px; font-style: italic; }
+    code { font-family: "Consolas", "Liberation Mono", monospace; font-size: 13px; background: #f0f0f0; padding: 1px 4px; border-radius: 2px; }
+    table { border-collapse: collapse; margin: 10px 0 16px; font-size: 14px; width: 100%; }
+    th, td { border: 1px solid #a2a9b1; padding: 6px 10px; text-align: left; vertical-align: top; }
+    th { background: #eaecf0; font-weight: 600; }
+    tr:nth-child(even) { background: #f8f9fa; }
+    .toc { background: #f8f9fa; border: 1px solid #a2a9b1; padding: 12px 20px; margin: 16px 0 20px; display: inline-block; font-size: 14px; }
+    .toc-title { font-weight: 700; text-align: center; margin-bottom: 6px; }
+    .toc ol { margin: 0; padding-left: 24px; } .toc li { margin: 2px 0; }
+    .see-also { list-style: disc; padding-left: 24px; } .see-also li { margin: 4px 0; }
+    .legend { margin: 16px 0; padding: 10px 16px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 4px; font-size: 13px; color: #166534; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>OTLCBot</h1>
+
+    <div class="legend">
+      <a class="wikilink" href="#">Green links</a><span class="w-tag">(w)</span> point to Wikipedia articles on AI development concepts.
+    </div>
+
+    <p><strong>OTLCBot</strong> is a Telegram bot built on a Raspberry Pi Zero W that performs long-term observation of group chat activity. It uses a <a class="wikilink" href="https://en.wikipedia.org/wiki/Large_language_model">large language model</a><span class="w-tag">(w)</span> (Google Gemini) to generate weekly reports, maintain rolling personality profiles of its subjects, and power an <a class="wikilink" href="https://en.wikipedia.org/wiki/Agentic_AI">autonomous agent</a><span class="w-tag">(w)</span> that occasionally interjects with dry, observational commentary. The bot's behavior is shaped by a <a class="wikilink" href="https://en.wikipedia.org/wiki/Prompt_engineering#System_prompting">system prompt</a><span class="w-tag">(w)</span> describing it as a not-quite-human intelligence conducting field research on a group of friends &mdash; a persona inspired by David Foster Wallace's critique of irony and sincerity. It has been in continuous operation since early 2026.</p>
+
+    <div class="toc">
+      <div class="toc-title">Contents</div>
+      <ol>
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#commands">Commands</a></li>
+        <li><a href="#agent-system">Agent System</a></li>
+        <li><a href="#weekly-reports">Weekly Reports</a></li>
+        <li><a href="#memory-system">Memory System</a></li>
+        <li><a href="#dashboard">Dashboard</a></li>
+        <li><a href="#infrastructure">Infrastructure</a></li>
+        <li><a href="#personality">Personality</a></li>
+        <li><a href="#see-also">See also</a></li>
+      </ol>
+    </div>
+
+    <h2 id="overview">Overview</h2>
+
+    <p>OTLCBot was built as a personal project to add a layer of structured observation to a small network of friend-group Telegram chats. It combines message logging, social features (group betting, shared watchlists), and AI-generated content through Google Gemini into a system that watches, remembers, and &mdash; on occasion &mdash; speaks. The project demonstrates several practical patterns in modern AI application development, including <a class="wikilink" href="https://en.wikipedia.org/wiki/Retrieval-augmented_generation">retrieval-augmented generation</a><span class="w-tag">(w)</span>, agentic reasoning, and multimodal generation (text and images from a single API).</p>
+
+    <p>The bot monitors two deployment contexts. The first is a standalone group chat. The second is <strong>Owl Town</strong>, a constellation of six topic-specific chats (books, sports, health, AI, media, and a general "basement") whose activity is aggregated into a single combined weekly report. All AI-generated content passes through a consistent persona that treats the group members as subjects in an ongoing study. See <a href="architecture.html">Architecture</a> for the full system design.</p>
+
+    <h2 id="commands">Commands</h2>
+
+    <table>
+      <tr><th>Command</th><th>Category</th><th>Description</th></tr>
+      <tr><td><code>/start</code></td><td>Utility</td><td>Confirms the bot is running</td></tr>
+      <tr><td><code>/chatid</code></td><td>Utility</td><td>Returns the current chat's Telegram ID</td></tr>
+      <tr><td><code>/stats</code></td><td>Utility</td><td>Top 10 posters in the last 24 hours</td></tr>
+      <tr><td><code>/help</code></td><td>Utility</td><td>Lists all available commands</td></tr>
+      <tr><td><code>/bet</code></td><td>Betting</td><td>Creates a new bet (guided 3-step conversation: description, settlement criteria, wager)</td></tr>
+      <tr><td><code>/bets</code></td><td>Betting</td><td>Lists all open bets in the chat</td></tr>
+      <tr><td><code>/settlebet</code></td><td>Betting</td><td>Settles a bet with a declared winner</td></tr>
+      <tr><td><code>/watch</code></td><td>Media</td><td>Adds a movie or show to the group watchlist</td></tr>
+      <tr><td><code>/read</code></td><td>Media</td><td>Adds a book to the group watchlist</td></tr>
+      <tr><td><code>/watchlist</code></td><td>Media</td><td>Shows all watchlist items</td></tr>
+      <tr><td><code>/rate</code></td><td>Media</td><td>Rates a watchlist item (1&ndash;5 stars)</td></tr>
+      <tr><td><code>/gallery</code></td><td>Navigation</td><td>Browse weekly AI-generated cartoons in-chat</td></tr>
+      <tr><td><code>/dashboard</code></td><td>Navigation</td><td>Opens the full Telegram MiniApp dashboard</td></tr>
+    </table>
+
+    <h2 id="agent-system">Agent System</h2>
+
+    <p>The bot includes an agentic decision layer &mdash; a system where the LLM does not simply respond to user input but autonomously decides <em>whether and how</em> to act. This follows an <strong>Observe&ndash;Reason&ndash;Act</strong> loop: after a configurable number of messages (default: 30), the agent gathers context, passes it to Gemini, and receives back a JSON decision &mdash; an example of <a class="wikilink" href="https://en.wikipedia.org/wiki/Prompt_engineering#Structured_output">structured output</a><span class="w-tag">(w)</span> where the model is constrained to respond in a machine-readable format. Most of the time, it chooses silence. See <a href="agent-system.html">Agent System</a> for the full architecture.</p>
+
+    <p>The agent has six <a class="wikilink" href="https://en.wikipedia.org/wiki/Tool_use_(LLM)">tools</a><span class="w-tag">(w)</span> at its disposal &mdash; discrete functions the LLM can invoke by name, a pattern sometimes called <strong>function calling</strong>:</p>
+
+    <table>
+      <tr><th>Tool</th><th>What it does</th></tr>
+      <tr><td><code>send_commentary</code></td><td>Posts a brief field observation about recent conversation</td></tr>
+      <tr><td><code>illustrated_summary</code></td><td>Generates an AI cartoon of the week's activity with a caption</td></tr>
+      <tr><td><code>nudge_bet</code></td><td>Reminds the group about a stale, unsettled bet</td></tr>
+      <tr><td><code>sincerity_check</code></td><td>Runs the DFW Sincerity Index and shares group-level results</td></tr>
+      <tr><td><code>add_media</code></td><td>Extracts an organic media recommendation from chat and adds it to the watchlist</td></tr>
+      <tr><td><code>update_casefile</code></td><td>Identifies a personality-revealing moment, updates a subject's profile, and announces the discovery</td></tr>
+    </table>
+
+    <p>Tools self-register via a Python decorator pattern &mdash; each tool function is wrapped with metadata (name, description, cost, guidelines) that automatically adds it to a tool registry. The agent's system prompt is generated dynamically from this registry, so adding a new tool requires no changes to the reasoning logic. The agent enforces a 2-hour cooldown between actions, ignores quiet chats, and is prohibited from focusing on the admin user.</p>
+
+    <h2 id="weekly-reports">Weekly Reports</h2>
+
+    <p>Every Friday at 3pm EST, a cron job triggers the full weekly reporting pipeline. For each monitored chat, the bot assembles a report containing message counts, the most active participants, and an AI-generated recap. Rather than sending random message samples to the LLM, the system uses <strong>conversation burst detection</strong> to select coherent conversation windows. This is a form of <a class="wikilink" href="https://en.wikipedia.org/wiki/Retrieval-augmented_generation">retrieval-augmented generation (RAG)</a><span class="w-tag">(w)</span>: the system retrieves relevant context from its own database and injects it into the prompt at generation time. See <a href="weekly-reports.html">Weekly Reports</a> for the complete pipeline.</p>
+
+    <p>The report includes a <strong>DFW Sincerity Index</strong>: a Gemini-powered <a class="wikilink" href="https://en.wikipedia.org/wiki/Sentiment_analysis">sentiment analysis</a><span class="w-tag">(w)</span> that assesses the group's irony-to-sincerity ratio, scored as a percentage and converted to a letter grade. Each user receives a private DM with their individual score and a trend arrow. The group sees only the aggregate.</p>
+
+    <p>For Owl Town, the bot produces a combined report accompanied by a prose <strong>gazette</strong> &mdash; a ~200-word briefing summarizing the week as a field report. A weekly AI-generated cartoon is also produced using Gemini's multimodal image generation.</p>
+
+    <h2 id="memory-system">Memory System</h2>
+
+    <p>One of the core challenges in building LLM-powered applications is <strong>memory</strong> &mdash; language models are stateless by default and have a limited <a class="wikilink" href="https://en.wikipedia.org/wiki/Large_language_model#Context_window">context window</a><span class="w-tag">(w)</span>. OTLCBot addresses this with a three-tier memory architecture. See <a href="memory-system.html">Memory System</a> for details.</p>
+
+    <p><strong>Tier 1 &mdash; Case Notes</strong> (short-term). Raw observations recorded by the agent as it acts during the week, tagged by type and optional target user.</p>
+
+    <p><strong>Tier 2 &mdash; Profiles and Themes</strong> (long-term). Every Friday, Gemini merges each user's raw messages with Tier 1 notes into a rolling personality summary. The prompts instruct the model to "consolidate and merge &mdash; don't just append," making this a form of lossy compression that fits an ever-growing observation history into a fixed-size context window.</p>
+
+    <p><strong>Tier 3 &mdash; Execution Log.</strong> Records every agent decision for cooldown enforcement and debugging.</p>
+
+    <p>The key design is the <strong>upward flow</strong>: Tier 1 notes are injected into Tier 2 consolidation prompts each Friday. The agent also reads its last five notes before each decision, giving it continuity between firings. When the system needs current state, it assembles a <strong>grounding block</strong> &mdash; a technique that reduces <a class="wikilink" href="https://en.wikipedia.org/wiki/Hallucination_(artificial_intelligence)">hallucination</a><span class="w-tag">(w)</span> by giving the model verified data rather than asking it to guess.</p>
+
+    <h2 id="dashboard">Dashboard</h2>
+
+    <p>The <code>/dashboard</code> command opens a Telegram MiniApp &mdash; a single-page web application served by a Flask backend and exposed via a Cloudflare tunnel. It provides five tabs: <strong>Gallery</strong> (weekly AI cartoons), <strong>User Profiles</strong> (case file dossiers), <strong>Bets</strong> (open and settled), <strong>Watch/Read</strong> (shared media list with star ratings), and <strong>Field Notes</strong> (a timeline of the bot's observations). See <a href="dashboard.html">Dashboard</a> for the technical implementation.</p>
+
+    <h2 id="infrastructure">Infrastructure</h2>
+
+    <p>OTLCBot runs on a Raspberry Pi Zero W with three systemd services: the Telegram bot, the Flask webapp, and a Cloudflare tunnel manager. Three cron jobs handle the Friday weekly report, a weekly database backup, and a monthly message prune. All data lives in a single SQLite database with ten tables. Configuration is <code>.env</code>-driven with toggleable feature flags. See <a href="infrastructure.html">Infrastructure</a> for the full setup.</p>
+
+    <h2 id="personality">Personality</h2>
+
+    <p>The bot's voice is defined by a single <code>BOT_PERSONA</code> constant &mdash; a system prompt injected into every Gemini call. System prompts are a foundational technique in LLM development: persistent instructions prepended to every request that shape the model's tone and role. The persona describes the bot as an AI quietly observing humans it finds confusing, sentimental, and &mdash; in Wallace's words &mdash; "unavoidably naive and goo-prone."</p>
+
+    <p>Different LLM calls use different <a class="wikilink" href="https://en.wikipedia.org/wiki/Temperature_(generative_AI)">temperature</a><span class="w-tag">(w)</span> settings &mdash; a parameter controlling randomness in output. Analytical tasks use low temperature (0.3&ndash;0.5) for deterministic results; creative tasks use high temperature (1.2&ndash;1.5) for varied prose. This dual-temperature approach is common in production LLM systems that need both reliable structured output and expressive natural language.</p>
+
+    <h2 id="see-also">See also</h2>
+
+    <ul class="see-also">
+      <li><a href="architecture.html">Architecture</a> &mdash; System design and data flow</li>
+      <li><a href="agent-system.html">Agent System</a> &mdash; Autonomous decision layer, tool registry, reasoning loop</li>
+      <li><a href="weekly-reports.html">Weekly Reports</a> &mdash; Friday pipeline, sincerity scoring, image generation, gazette</li>
+      <li><a href="memory-system.html">Memory System</a> &mdash; Three-tier observation model, consolidation, grounding</li>
+      <li><a href="dashboard.html">Dashboard</a> &mdash; Telegram MiniApp, Flask API, gallery interface</li>
+      <li><a href="infrastructure.html">Infrastructure</a> &mdash; Pi deployment, systemd services, cron, schema, configuration</li>
+    </ul>
+  </div>
+</body>
+</html>

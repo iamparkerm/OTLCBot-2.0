@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Memory System — OTLCBot Wiki</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Liberation Sans", sans-serif; font-size: 15px; line-height: 1.7; color: #222; background: #f8f9fa; }
+    .page { max-width: 820px; margin: 0 auto; background: #fff; min-height: 100vh; border-left: 1px solid #e0e0e0; border-right: 1px solid #e0e0e0; padding: 32px 40px 60px; }
+    h1 { font-size: 28px; font-weight: 400; border-bottom: 1px solid #a2a9b1; padding-bottom: 4px; margin-bottom: 12px; font-family: "Linux Libertine", "Georgia", serif; }
+    h2 { font-size: 20px; font-weight: 400; border-bottom: 1px solid #a2a9b1; padding-bottom: 2px; margin-top: 28px; margin-bottom: 10px; font-family: "Linux Libertine", "Georgia", serif; }
+    h3 { font-size: 16px; font-weight: 600; margin-top: 18px; margin-bottom: 6px; }
+    p { margin-bottom: 10px; }
+    a { color: #0645ad; text-decoration: none; } a:hover { text-decoration: underline; }
+    a.wikilink { color: #15803d; } .w-tag { font-size: 10px; color: #15803d; vertical-align: super; margin-left: 1px; font-style: italic; }
+    code { font-family: "Consolas", "Liberation Mono", monospace; font-size: 13px; background: #f0f0f0; padding: 1px 4px; border-radius: 2px; }
+    pre { background: #f0f0f0; padding: 14px 16px; border-radius: 4px; font-size: 13px; overflow-x: auto; margin: 10px 0 16px; line-height: 1.5; font-family: "Consolas", "Liberation Mono", monospace; }
+    table { border-collapse: collapse; margin: 10px 0 16px; font-size: 14px; width: 100%; }
+    th, td { border: 1px solid #a2a9b1; padding: 6px 10px; text-align: left; vertical-align: top; }
+    th { background: #eaecf0; font-weight: 600; }
+    tr:nth-child(even) { background: #f8f9fa; }
+    .breadcrumb { font-size: 13px; color: #555; margin-bottom: 8px; }
+    .see-also { list-style: disc; padding-left: 24px; } .see-also li { margin: 4px 0; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="breadcrumb"><a href="wiki.html">OTLCBot</a> &rsaquo; Memory System</div>
+    <h1>Memory System</h1>
+
+    <p>Large language models are stateless &mdash; each API call starts with no memory of previous calls. They also have a limited <a class="wikilink" href="https://en.wikipedia.org/wiki/Large_language_model#Context_window">context window</a><span class="w-tag">(w)</span>, meaning they can only process a fixed amount of text per request. OTLCBot addresses both constraints with a three-tier memory architecture that stores observations at different granularities and consolidates them over time.</p>
+
+    <h2>The Three Tiers</h2>
+
+    <table>
+      <tr><th>Tier</th><th>Storage</th><th>Lifespan</th><th>Written by</th><th>Read by</th></tr>
+      <tr><td>1. Case Notes</td><td><code>case_notes</code> table</td><td>Accumulates (prunable)</td><td>Agent tools</td><td>Agent context, weekly consolidation, gazette</td></tr>
+      <tr><td>2. Profiles &amp; Themes</td><td><code>user_profiles</code>, <code>group_themes</code></td><td>Rolling (overwritten weekly)</td><td>Weekly pipeline</td><td>Agent context, grounding blocks, dashboard</td></tr>
+      <tr><td>3. Execution Log</td><td><code>agent_actions</code></td><td>Accumulates</td><td>Agent loop</td><td>Agent cooldown check</td></tr>
+    </table>
+
+    <h2>Tier 1: Case Notes</h2>
+
+    <p>Case notes are the bot's short-term memory &mdash; raw observations recorded as the agent acts during the week. Three agent tools write case notes:</p>
+
+    <table>
+      <tr><th>Tool</th><th>Note type</th><th>Target user</th><th>Content</th></tr>
+      <tr><td><code>send_commentary</code></td><td><code>commentary</code></td><td>None (group-level)</td><td>The commentary text posted to chat</td></tr>
+      <tr><td><code>update_casefile</code></td><td><code>discovery</code></td><td>The profiled user</td><td>What was revealed about the user's personality</td></tr>
+      <tr><td><code>illustrated_summary</code></td><td><code>observation</code></td><td>None (group-level)</td><td>The caption generated for the cartoon</td></tr>
+    </table>
+
+    <p>Case notes serve three downstream purposes: they give the agent continuity between firings (it reads its last 5 notes before each decision), they feed into the weekly gazette prompt, and they flow upward into Tier 2 during Friday consolidation.</p>
+
+    <h2>Tier 2: Profiles and Themes</h2>
+
+    <p>Tier 2 is the bot's long-term memory &mdash; consolidated summaries that compress weeks of observation into a few hundred words. This is necessary because the raw data (thousands of messages, dozens of case notes) would far exceed the LLM's context window. The consolidation process is a form of <strong>abstractive summarization</strong> where the model produces a new, shorter text that captures the essential patterns rather than excerpting verbatim.</p>
+
+    <h3>User Profiles</h3>
+
+    <p>Each user has a rolling <code>profile_text</code> (a personality summary) and a <code>case_file_text</code> (a formatted dossier for the dashboard). Both are regenerated weekly by <code>update_user_profile()</code> and <code>generate_case_file_text()</code>.</p>
+
+    <p>The profile update prompt receives three inputs:</p>
+    <ul style="padding-left: 24px; margin-bottom: 10px;">
+      <li>The existing profile (if any) &mdash; the model's prior understanding</li>
+      <li>This week's message snippets &mdash; what the user actually said</li>
+      <li>Recent discovery notes from <code>case_notes</code> (last 14 days) &mdash; what the agent previously noticed about this user</li>
+    </ul>
+
+    <p>The prompt instructs: <em>"Consolidate and merge &mdash; don't just append. Drop stale details that haven't recurred."</em> This prevents the profile from growing indefinitely while ensuring recurring patterns are reinforced and one-off observations decay naturally.</p>
+
+    <p>Profiles are versioned (incremented each week). At milestone versions (2, 4, 8, 13, 26), the bot generates and posts an announcement to the group.</p>
+
+    <h3>Group Themes</h3>
+
+    <p>Each chat has a rolling <code>theme_text</code> that captures its culture: running jokes, recurring references, group dynamics, shared interests, and communication style. The update process mirrors user profiles &mdash; the existing theme, this week's conversation windows, and recent case notes are all injected into the consolidation prompt.</p>
+
+    <p>Group themes are used throughout the system: they appear in the agent's context when reasoning, they're injected into image generation prompts for visual consistency, and they're part of the grounding block for creative text generation.</p>
+
+    <h2>Tier 3: Execution Log</h2>
+
+    <p>The <code>agent_actions</code> table records every agent decision: the chosen action, the reasoning, the timestamp, and whether execution succeeded. Its primary purpose is cooldown enforcement &mdash; the agent checks "hours since last action" before deciding. It also serves as a debugging and audit trail.</p>
+
+    <h2>The Upward Flow</h2>
+
+    <p>The critical design pattern is the <strong>upward flow</strong> from Tier 1 to Tier 2. Without it, the tiers would be independent silos &mdash; the agent would make observations during the week that the weekly consolidation would never see.</p>
+
+    <p>The flow works as follows:</p>
+
+    <table>
+      <tr><th>When</th><th>What happens</th></tr>
+      <tr><td>Agent fires mid-week</td><td>Observation saved to <code>case_notes</code> (Tier 1)</td></tr>
+      <tr><td>Friday: <code>update_user_profile()</code></td><td>Pulls <code>discovery</code> notes about this user from last 14 days and injects them alongside message snippets</td></tr>
+      <tr><td>Friday: <code>update_group_theme()</code></td><td>Pulls all case notes for this chat from last 14 days and injects them alongside conversation windows</td></tr>
+      <tr><td>Result</td><td>Tier 2 profiles/themes now reflect both raw messages and the agent's curated observations</td></tr>
+    </table>
+
+    <p>This means the bot's long-term memory is richer than what raw messages alone would produce. If the agent noticed that "Subject keeps bringing up sourdough bread" during the week, that observation will be absorbed into the user's profile on Friday &mdash; even if the individual messages mentioning bread were too scattered to form a clear pattern on their own.</p>
+
+    <h2>The Grounding Block</h2>
+
+    <p>When the system needs to give Gemini awareness of current state (for commentary, recaps, or image generation), it assembles a <strong>grounding block</strong> via <code>build_grounding_block()</code>. This is a form of <a class="wikilink" href="https://en.wikipedia.org/wiki/Retrieval-augmented_generation">retrieval-augmented generation</a><span class="w-tag">(w)</span> that reduces <a class="wikilink" href="https://en.wikipedia.org/wiki/Hallucination_(artificial_intelligence)">hallucination</a><span class="w-tag">(w)</span> by injecting verified facts into the prompt.</p>
+
+    <p>The grounding block includes:</p>
+    <ul style="padding-left: 24px; margin-bottom: 10px;">
+      <li>The group theme (from <code>group_themes</code>)</li>
+      <li>Up to 5 open bets (from <code>bets</code>)</li>
+      <li>Recent watchlist items from the last 14 days (from <code>watchlist</code>)</li>
+      <li>Active user profile headlines (from <code>user_profiles</code>)</li>
+    </ul>
+
+    <p>This ensures the model can reference real, current information &mdash; actual bet descriptions, actual watchlist items, actual personality observations &mdash; rather than inventing plausible-sounding details.</p>
+
+    <h2>See also</h2>
+    <ul class="see-also">
+      <li><a href="agent-system.html">Agent System</a> &mdash; How the agent reads and writes case notes</li>
+      <li><a href="weekly-reports.html">Weekly Reports</a> &mdash; The Friday consolidation pipeline</li>
+      <li><a href="infrastructure.html">Infrastructure</a> &mdash; Full database schema</li>
+      <li><a href="wiki.html">Main article</a></li>
+    </ul>
+  </div>
+</body>
+</html>
