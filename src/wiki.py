@@ -116,7 +116,7 @@ def render_page(title: str, breadcrumb: str, body: str) -> str:
       <a href="/topics.html">Topics</a>
       <a href="/timeline.html">Timeline</a>
       <a href="/sincerity.html">Sincerity</a>
-      <a href="/dashboard">Dashboard</a>
+      <a href="/dashboard?chat_id={OWL_TOWN_HOME}">Dashboard</a>
     </div>
     <div class="breadcrumb">{breadcrumb}</div>
     <h1>{html.escape(title)}</h1>
