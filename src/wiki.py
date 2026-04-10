@@ -412,7 +412,8 @@ def render_index(channel_data: list[dict], lede: str,
     else:
         home_data = next((cd for cd in channel_data if cd["chat_id"] == OWL_TOWN_HOME), None)
         if home_data and home_data.get("theme_text"):
-            intro_html = f"<p>{linkify_usernames(html.escape(home_data['theme_text'][:400]), ku)}</p>"
+            first_para = (home_data["theme_text"].split("\n\n")[0]).strip()
+            intro_html = f"<p>{linkify_usernames(html.escape(first_para), ku)}</p>"
         else:
             intro_html = ""
 
