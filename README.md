@@ -23,7 +23,8 @@ An AI-powered Telegram observer bot that watches group chats, builds rolling per
 src/
 ├── config.py       # All constants and env vars (single source of truth)
 ├── bot.py          # Telegram bot: message logging, commands, agent trigger
-├── agent.py        # Autonomous agent loop: context → Gemini reasoning → tools
+├── observer.py     # Observer agent: reads messages → writes case_notes (every 2h, no public output)
+├── agent.py        # Speaker agent: reads case_notes → reasons → posts publicly (every 3h)
 ├── profiles.py     # Group themes, user profiles, case files, DB bootstrap
 ├── sincerity.py    # DFW sincerity pipeline: scoring, grading, trend tracking
 ├── reports.py      # Conversation windows, AI recap, gazette, image generation
@@ -37,15 +38,24 @@ scripts/
 └── start-tunnel.sh     # Cloudflare named tunnel (wiki.otlconline.net)
 ```
 
+### Two-agent architecture
+
+The bot uses a split Observer/Speaker model:
+
+- **Observer** (`observer.py`) — runs every 2 hours, reads recent messages, writes internal `case_notes`, updates group themes. Never sends Telegram messages. No bot object required.
+- **Speaker** (`agent.py`) — runs every 3 hours (and on message-count threshold in bot.py), reads `case_notes` as context, reasons about what to post, executes public tools. All outbound messages go through here.
+
+This separation means the bot accumulates observations continuously without over-posting. The Speaker reads the Observer's case notes as grounding for its decisions.
+
 ### Module dependency flow
 
 ```
 config  ←  profiles, sincerity, reports
 profiles  ←  reports (get_group_theme for grounding)
-profiles, sincerity, reports  ←  weekly (orchestrator), agent
+profiles, sincerity, reports  ←  weekly (orchestrator), agent, observer
 ```
 
-No module imports from `weekly.py` except `agent.py` for DB bootstrap helpers.
+No module imports from `weekly.py`. `observer.py` and `agent.py` are standalone scripts.
 
 ---
 
@@ -128,6 +138,12 @@ bash scripts/start-tunnel.sh  # Cloudflare tunnel → wiki.otlconline.net
 ## Cron jobs (Pi)
 
 ```
+# Observer: read messages, write case_notes (every 2 hours)
+0 */2 * * * /home/parker/OTLCBot-2.0/.venv/bin/python /home/parker/OTLCBot-2.0/src/observer.py >> observer.log 2>&1
+
+# Speaker: reason + post publicly (every 3 hours)
+0 */3 * * * /home/parker/OTLCBot-2.0/.venv/bin/python /home/parker/OTLCBot-2.0/src/agent.py >> agent.log 2>&1
+
 # Owl Town weekly report (Friday 3pm EST)
 0 15 * * 5 /home/parker/OTLCBot-2.0/.venv/bin/python /home/parker/OTLCBot-2.0/src/weekly.py --group owltown >> weekly.log 2>&1
 
