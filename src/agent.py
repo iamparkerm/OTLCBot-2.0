@@ -173,24 +173,6 @@ def gather_context(conn: sqlite3.Connection, chat_id: int) -> dict:
     ).fetchall()
     recent_snippets = [f"{who}: {text[:150]}" for who, text in reversed(recent) if text]
 
-    # Open bets and their age
-    open_bets = conn.execute(
-        """
-        SELECT id, description, created_at
-        FROM bets
-        WHERE chat_id = ? AND settled_at IS NULL
-        ORDER BY created_at;
-        """,
-        (chat_id,),
-    ).fetchall()
-    bets_info = []
-    for bet_id, desc, created_at in open_bets:
-        try:
-            age_days = (now - datetime.fromisoformat(created_at)).days
-        except (ValueError, TypeError):
-            age_days = 0
-        bets_info.append({"id": bet_id, "description": desc, "age_days": age_days})
-
     # Hours since last agent action in this chat
     last_action = conn.execute(
         "SELECT executed_at FROM agent_actions WHERE chat_id = ? ORDER BY executed_at DESC LIMIT 1;",
@@ -236,7 +218,6 @@ def gather_context(conn: sqlite3.Connection, chat_id: int) -> dict:
         "message_counts": counts,
         "active_users_6h": active_users,
         "recent_messages": recent_snippets,
-        "open_bets": bets_info,
         "hours_since_last_bot_action": round(hours_since_last, 1),
         "group_theme": group_theme or "(no theme profile yet)",
         "your_recent_observations": prior_notes or "(none yet)",
@@ -304,7 +285,6 @@ def reason(context: dict) -> dict:
             f"last 7d: {context['message_counts']['7d']}\n"
             f"Active users (6h): {', '.join(context['active_users_6h']) or 'none'}\n"
             f"Hours since last bot action: {context['hours_since_last_bot_action']}\n"
-            f"Open bets: {json.dumps(context['open_bets']) if context['open_bets'] else 'none'}\n"
             f"\nGroup personality: {context['group_theme']}\n"
             f"\nYour recent observations:\n{context['your_recent_observations']}\n"
             f"\nRecent messages:\n" + "\n".join(context['recent_messages'][-10:])
@@ -395,7 +375,7 @@ async def tool_send_commentary(conn, chat_id, bot, params):
                 "Based on the recent conversation, write ONE brief message (1-2 sentences max) — "
                 "a field observation for the case file that you're reading aloud. It should sound "
                 "like a detective muttering into a tape recorder about what the subjects are up to. "
-                "You can reference open bets, watchlist items, or what you know about these people "
+                "You can reference watchlist items or what you know about these people "
                 "if it fits naturally.\n\n"
                 f"Group personality: {group_theme}\n"
                 f"{grounding_block}"
@@ -489,45 +469,6 @@ async def tool_illustrated_summary(conn, chat_id, bot, params):
     return True
 
 
-@register_tool(
-    name="nudge_bet",
-    description="Remind the group about an open bet that's getting stale (>14 days old). "
-                "Include the bet ID in params.",
-    guidelines="Bet nudges are useful when a bet is >14 days old and the group seems to have forgotten.",
-)
-async def tool_nudge_bet(conn, chat_id, bot, params):
-    bet_id = params.get("bet_id")
-    if bet_id:
-        row = conn.execute(
-            "SELECT description, wager, created_by_name FROM bets WHERE id = ? AND chat_id = ? AND settled_at IS NULL;",
-            (bet_id, chat_id),
-        ).fetchone()
-        if row:
-            desc, wager, by_name = row
-            msg = (
-                f"🎲 Bet check-in — #{bet_id} is still open!\n\n"
-                f"{desc}\n"
-                f"💰 {wager} (by @{by_name})\n\n"
-                f"Time to settle up? Use /settlebet {bet_id} <winner>"
-            )
-            await bot.send_message(chat_id=chat_id, text=msg)
-            return True
-    # Fallback: nudge the oldest open bet
-    row = conn.execute(
-        "SELECT id, description, wager, created_by_name FROM bets WHERE chat_id = ? AND settled_at IS NULL ORDER BY created_at ASC LIMIT 1;",
-        (chat_id,),
-    ).fetchone()
-    if row:
-        bid, desc, wager, by_name = row
-        msg = (
-            f"🎲 Bet check-in — #{bid} is still open!\n\n"
-            f"{desc}\n"
-            f"💰 {wager} (by @{by_name})\n\n"
-            f"Time to settle up? Use /settlebet {bid} <winner>"
-        )
-        await bot.send_message(chat_id=chat_id, text=msg)
-        return True
-    return False
 
 
 @register_tool(
@@ -903,7 +844,6 @@ async def run_agent_loop(
             print(f"  Messages 6h/24h/7d: {context['message_counts']['6h']}/{context['message_counts']['24h']}/{context['message_counts']['7d']}")
             print(f"  Active users (6h): {context['active_users_6h']}")
             print(f"  Hours since last action: {context['hours_since_last_bot_action']}")
-            print(f"  Open bets: {len(context['open_bets'])}")
 
             # Reason
             decision = reason(context)
