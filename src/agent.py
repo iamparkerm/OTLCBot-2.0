@@ -793,7 +793,10 @@ async def run_agent_loop(
                     _log_action(conn, chat_id, decision["action"], f"error: {e}", False)
                     print(f"  Execution failed: {e}")
             else:
-                _log_action(conn, chat_id, "nothing", decision.get("reason", ""), True)
+                # Do NOT log "nothing" to agent_actions — the cooldown clock should only
+                # reset when the bot actually posts something publicly. Logging quiet
+                # evaluations here would cause frequent nothing-decisions (e.g. from the
+                # message-count trigger in bot.py) to suppress future speaking.
                 print(f"  No action taken.")
 
 
