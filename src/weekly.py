@@ -409,9 +409,11 @@ def generate_weekly_image(snippets: str, context: str = "", retries: int = 2) ->
             "Generate a single-panel cartoon in the style of a New Yorker illustration: "
             "clean ink lines, minimal shading, lots of white space, sparse composition. "
             "Show ONE clear scene with no more than 2-3 figures. "
-            "ABSOLUTE RULES: zero speech bubbles, zero thought bubbles, zero text of any kind "
-            "inside the image, zero caption below. The entire joke must be told through the "
-            "visual scene alone — expressions, body language, and what the characters are doing."
+            "ABSOLUTE RULES: zero speech bubbles, zero thought bubbles, zero clouds or wisps "
+            "or smoke or vapor or floating shapes of any kind near or above any character's head, "
+            "zero text of any kind inside the image, zero labels, zero caption below. "
+            "The entire joke must be told through the visual scene alone — expressions, "
+            "body language, and what the characters are doing."
         )
         print(f"  Scene summary: {scene}")
 
@@ -1166,18 +1168,8 @@ def build_owl_town_report() -> str:
         else:
             lines.append("- (quiet week)")
 
-        # Combined AI recap — pull conversation windows across ALL Owl Town chats
-        if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
-            combined_snippets = get_conversation_windows_multi(
-                conn, chat_ids_int, since, chat_names=OWL_TOWN_NAMES,
-            )
-            if combined_snippets:
-                grounding = build_grounding_block(conn, chat_ids_int)
-                recap = generate_ai_recap(combined_snippets, grounding=grounding)
-                if recap:
-                    lines.append("")
-                    lines.append("📝 Field Notes:")
-                    lines.append(recap)
+        # NOTE: No AI recap here — the gazette (build_weekly_gazette) sends
+        # the narrative field notes as a separate message before this stats block.
 
     return "\n".join(lines)
 
