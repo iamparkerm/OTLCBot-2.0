@@ -40,34 +40,39 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 AGENT_MSG_THRESHOLD = int(os.getenv("AGENT_MSG_THRESHOLD", "50"))
 
 # Import existing tools from weekly.py
-from weekly import (
-    get_weekly_snippets,
-    get_conversation_windows,
-    get_conversation_windows_multi,
-    build_grounding_block,
-    generate_weekly_image,
-    analyze_sincerity,
-    save_sincerity_scores,
-    build_group_sincerity_message,
-    get_sincerity_snippets,
-    get_group_theme,
-    update_group_theme,
-    update_user_profile,
-    generate_case_file_text,
-    get_user_snippets,
-    OWL_TOWN_CHAT_IDS,
-    OWL_TOWN_SEND_TO,
-    OWL_TOWN_NAMES,
-    get_user_profile,
-    _ensure_profile_tables,
-    _send_cost_dm,
-    ENABLE_AI_SUMMARY,
-    ENABLE_SINCERITY_INDEX,
-    SINCERITY_SNIPPET_LIMIT,
+from config import (
+    BOT_PERSONA,
     COST_PER_IMAGE,
     COST_PER_TEXT_CALL,
-    BOT_PERSONA,
+    ENABLE_AI_SUMMARY,
+    ENABLE_SINCERITY_INDEX,
+    OWL_TOWN_CHAT_IDS,
+    OWL_TOWN_NAMES,
+    OWL_TOWN_SEND_TO,
+    SINCERITY_SNIPPET_LIMIT,
 )
+from profiles import (
+    generate_case_file_text,
+    get_group_theme,
+    get_user_profile,
+    get_user_snippets,
+    update_group_theme,
+    update_user_profile,
+)
+from reports import (
+    build_grounding_block,
+    generate_weekly_image,
+    get_conversation_windows,
+    get_conversation_windows_multi,
+    get_weekly_snippets,
+)
+from sincerity import (
+    analyze_sincerity,
+    build_group_sincerity_message,
+    get_sincerity_snippets,
+    save_sincerity_scores,
+)
+from weekly import _ensure_profile_tables, _send_cost_dm
 
 
 # ============================================================
