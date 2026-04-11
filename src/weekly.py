@@ -38,6 +38,7 @@ from config import (
 )
 from profiles import (
     _check_dossier_milestone,
+    ensure_profile_tables,
     generate_case_file_text,
     get_group_theme,
     get_user_snippets,
@@ -62,71 +63,7 @@ from sincerity import (
 )
 
 
-# ============================================================
-# DB bootstrap
-# ============================================================
-
-def _ensure_profile_tables(conn: sqlite3.Connection) -> None:
-    """Create profile tables if they don't exist (weekly.py doesn't import bot.init_db)."""
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS user_profiles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            username TEXT,
-            profile_text TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            version INTEGER NOT NULL DEFAULT 1,
-            UNIQUE(user_id)
-        );
-        """
-    )
-    try:
-        conn.execute("ALTER TABLE user_profiles ADD COLUMN case_file_text TEXT;")
-    except sqlite3.OperationalError:
-        pass  # column already exists
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS group_themes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
-            theme_text TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            version INTEGER NOT NULL DEFAULT 1,
-            UNIQUE(chat_id)
-        );
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS weekly_images (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
-            week_of TEXT NOT NULL,
-            image_prompt TEXT,
-            telegram_file_id TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
-        """
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_weekly_images_chat_week ON weekly_images(chat_id, week_of);"
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS case_notes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
-            note_type TEXT NOT NULL,
-            target_username TEXT,
-            note_text TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
-        """
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_case_notes_chat_created ON case_notes(chat_id, created_at);"
-    )
+# DB bootstrap lives in profiles.ensure_profile_tables
 
 
 # ============================================================
@@ -261,7 +198,7 @@ async def send_weekly_async(group: str = "all") -> None:
         raise RuntimeError("Missing TELEGRAM_CHAT_ID in .env")
 
     with sqlite3.connect(DB_PATH) as conn:
-        _ensure_profile_tables(conn)
+        ensure_profile_tables(conn)
 
     bot = Bot(token=TOKEN)
     week_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")

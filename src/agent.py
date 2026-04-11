@@ -52,6 +52,7 @@ from config import (
     SINCERITY_SNIPPET_LIMIT,
 )
 from profiles import (
+    ensure_profile_tables,
     generate_case_file_text,
     get_group_theme,
     get_user_profile,
@@ -72,7 +73,6 @@ from sincerity import (
     get_sincerity_snippets,
     save_sincerity_scores,
 )
-from weekly import _ensure_profile_tables, _send_cost_dm
 
 
 # ============================================================
@@ -755,7 +755,7 @@ async def tool_update_casefile(conn, chat_id, bot, params):
             return False
 
         # Update the rolling profile
-        _ensure_profile_tables(conn)
+        ensure_profile_tables(conn)
         profile_text = update_user_profile(conn, target_uid, target_username, user_snippets)
         if not profile_text:
             return False
@@ -892,7 +892,7 @@ async def run_agent_loop(
 
     with sqlite3.connect(DB_PATH) as conn:
         ensure_agent_table(conn)
-        _ensure_profile_tables(conn)
+        ensure_profile_tables(conn)
 
         for chat_id_str in chat_ids:
             chat_id = int(chat_id_str)
@@ -913,7 +913,11 @@ async def run_agent_loop(
             if decision["action"] != "nothing":
                 try:
                     success = await execute(conn, chat_id, decision, bot)
-                    _log_action(conn, chat_id, decision["action"], decision.get("reason", ""), success)
+                    # silent_observation is intentionally not logged to agent_actions —
+                    # it has no chat footprint and must not reset the visible-action cooldown.
+                    # Its record lives in case_notes instead.
+                    if decision["action"] != "silent_observation":
+                        _log_action(conn, chat_id, decision["action"], decision.get("reason", ""), success)
                     print(f"  Executed: {decision['action']} (success={success})")
                 except Exception as e:
                     _log_action(conn, chat_id, decision["action"], f"error: {e}", False)

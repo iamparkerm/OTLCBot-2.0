@@ -12,6 +12,78 @@ from config import BOT_PERSONA, GEMINI_API_KEY
 
 
 # ============================================================
+# DB bootstrap
+# ============================================================
+
+def ensure_profile_tables(conn: sqlite3.Connection) -> None:
+    """Create profile/theme/image/case-note tables if they don't exist.
+
+    Called by both the weekly pipeline and the agent loop at startup.
+    Kept here (not in weekly.py) so capability modules don't depend on
+    the orchestrator's internals.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            profile_text TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(user_id)
+        );
+        """
+    )
+    try:
+        conn.execute("ALTER TABLE user_profiles ADD COLUMN case_file_text TEXT;")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS group_themes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            theme_text TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(chat_id)
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS weekly_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            week_of TEXT NOT NULL,
+            image_prompt TEXT,
+            telegram_file_id TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_weekly_images_chat_week ON weekly_images(chat_id, week_of);"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS case_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            note_type TEXT NOT NULL,
+            target_username TEXT,
+            note_text TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_case_notes_chat_created ON case_notes(chat_id, created_at);"
+    )
+
+
+# ============================================================
 # Group themes
 # ============================================================
 
