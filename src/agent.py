@@ -286,8 +286,15 @@ def build_system_prompt() -> str:
     )
 
 
-def reason(context: dict) -> dict:
-    """Ask Gemini to decide what the bot should do given the current context."""
+def reason(context: dict, fired_this_cycle: set[str] | None = None) -> dict:
+    """Ask Gemini to decide what the bot should do given the current context.
+
+    Args:
+        context: Output of gather_context() for a single chat.
+        fired_this_cycle: Tools that have already successfully fired during this
+            run (across earlier chats). Passed to the model so it won't double-up
+            on the same action in a single sweep.
+    """
     try:
         from google import genai
 
@@ -296,6 +303,11 @@ def reason(context: dict) -> dict:
         system_prompt = build_system_prompt()
 
         # Build a readable context string for the model
+        already_used = (
+            f"\nAlready used this run (do not pick these again): "
+            f"{', '.join(sorted(fired_this_cycle))}\n"
+            if fired_this_cycle else ""
+        )
         ctx_text = (
             f"Day: {context['day_of_week']}, Time (UTC): {context['current_time_utc']}\n"
             f"Messages — last 6h: {context['message_counts']['6h']}, "
@@ -304,6 +316,7 @@ def reason(context: dict) -> dict:
             f"Active users (6h): {', '.join(context['active_users_6h']) or 'none'}\n"
             f"Hours since last bot action: {context['hours_since_last_bot_action']}\n"
             f"Messages since last bot action: {context['messages_since_last_bot_action']}\n"
+            f"{already_used}"
             f"\nGroup personality: {context['group_theme']}\n"
             f"\nYour recent observations:\n{context['your_recent_observations']}\n"
             f"\nRecent messages:\n" + "\n".join(context['recent_messages'][-10:])
@@ -781,6 +794,11 @@ async def run_agent_loop(
 
     print(f"Agent: {len(TOOLS)} tools registered: {', '.join(TOOLS.keys())}")
 
+    # Track which tools have successfully fired across all chats this run so we
+    # can tell Gemini not to repeat them. Prevents the same action (e.g.
+    # send_commentary) from firing in multiple chats in a single sweep.
+    fired_this_cycle: set[str] = set()
+
     with sqlite3.connect(DB_PATH) as conn:
         ensure_agent_table(conn)
         ensure_profile_tables(conn)
@@ -794,9 +812,11 @@ async def run_agent_loop(
             print(f"  Messages 6h/24h/7d: {context['message_counts']['6h']}/{context['message_counts']['24h']}/{context['message_counts']['7d']}")
             print(f"  Active users (6h): {context['active_users_6h']}")
             print(f"  Hours since last action: {context['hours_since_last_bot_action']}")
+            if fired_this_cycle:
+                print(f"  Already fired this run: {', '.join(sorted(fired_this_cycle))}")
 
             # Reason
-            decision = reason(context)
+            decision = reason(context, fired_this_cycle=fired_this_cycle)
             print(f"  Decision: {decision['action']} — {decision.get('reason', '')}")
 
             # Act
@@ -804,6 +824,8 @@ async def run_agent_loop(
                 try:
                     success = await execute(conn, chat_id, decision, bot)
                     _log_action(conn, chat_id, decision["action"], decision.get("reason", ""), success)
+                    if success:
+                        fired_this_cycle.add(decision["action"])
                     print(f"  Executed: {decision['action']} (success={success})")
                 except Exception as e:
                     _log_action(conn, chat_id, decision["action"], f"error: {e}", False)
