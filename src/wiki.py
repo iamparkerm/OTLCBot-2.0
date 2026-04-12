@@ -97,7 +97,7 @@ PAGE_STYLE = """
 # ============================================================
 
 def render_page(title: str, breadcrumb: str, body: str) -> str:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
