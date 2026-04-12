@@ -601,7 +601,7 @@ def render_person_page(profile: dict, sincerity_rows: list) -> str:
 
 def render_topics_page(topics: list[dict], known_usernames: set[str] | None = None) -> str:
     if not topics:
-        body = "<p>No cross-channel topics compiled yet. Check back after the next weekly run.</p>"
+        body = "<p>Topics are compiled each Friday during the weekly run. Check back after the next report.</p>"
         return render_page("Topics", "<a href='/'>Owl Town</a> &rsaquo; Topics", body)
 
     ku = known_usernames or set()
