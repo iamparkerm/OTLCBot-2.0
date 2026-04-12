@@ -38,7 +38,7 @@ from profiles import ensure_profile_tables, get_group_theme, update_group_theme
 # Constants
 # ============================================================
 
-OBSERVE_WINDOW_HOURS = 2      # look back this far each run
+OBSERVE_WINDOW_HOURS = 4      # look back this far each run (matches cron interval)
 MIN_MESSAGES_TO_OBSERVE = 3   # skip chats quieter than this
 THEME_UPDATE_THRESHOLD = 20   # update group theme after this many new messages
 
@@ -158,7 +158,7 @@ def _observe_chat(conn: sqlite3.Connection, chat_id: int) -> None:
 # ============================================================
 
 def run_observer(chat_ids: list[int]) -> None:
-    """Run the observer across all provided chat IDs."""
+    """Run the observer across all provided chat IDs, then rebuild the wiki."""
     if not GEMINI_API_KEY:
         print("Observer: GEMINI_API_KEY not set, exiting.")
         return
@@ -170,6 +170,20 @@ def run_observer(chat_ids: list[int]) -> None:
         ensure_profile_tables(conn)
         for chat_id in chat_ids:
             _observe_chat(conn, chat_id)
+
+    # Rebuild wiki from DB data so People, Timeline, and Sincerity pages
+    # reflect the latest case notes and profile updates immediately.
+    # Gemini-compiled sections (Topics, channel articles) are skipped here
+    # and compiled only during the full weekly run on Fridays.
+    print("Observer: rebuilding wiki (no-gemini)...")
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT / "src"))
+        from wiki import build_wiki
+        pages = build_wiki(gemini_enabled=False)
+        print(f"Observer: wiki rebuilt — {pages} pages written")
+    except Exception as e:
+        print(f"Observer: wiki rebuild failed — {e}")
 
     print("Observer: done.\n")
 

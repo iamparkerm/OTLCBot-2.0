@@ -177,19 +177,30 @@ def gather_context(conn: sqlite3.Connection, chat_id: int) -> dict:
     ).fetchall()
     recent_snippets = [f"{who}: {text[:150]}" for who, text in reversed(recent) if text]
 
-    # Hours since last agent action in this chat
+    # Hours since last agent action in this chat + messages since then
     last_action = conn.execute(
         "SELECT executed_at FROM agent_actions WHERE chat_id = ? ORDER BY executed_at DESC LIMIT 1;",
         (chat_id,),
     ).fetchone()
+    last_action_dt = None
     if last_action:
         try:
-            last_dt = datetime.fromisoformat(last_action[0])
-            hours_since_last = (now - last_dt).total_seconds() / 3600
+            last_action_dt = datetime.fromisoformat(last_action[0])
+            hours_since_last = (now - last_action_dt).total_seconds() / 3600
         except (ValueError, TypeError):
             hours_since_last = 999
     else:
         hours_since_last = 999  # never acted
+
+    # Count user messages posted since the last bot action
+    if last_action_dt:
+        msgs_since_row = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE chat_id = ? AND sent_at_utc > ?;",
+            (chat_id, last_action_dt.isoformat()),
+        ).fetchone()
+        msgs_since_last_action = msgs_since_row[0] if msgs_since_row else 0
+    else:
+        msgs_since_last_action = counts["7d"]  # never acted — treat as plenty
 
     # Group theme
     group_theme = get_group_theme(conn, chat_id)
@@ -223,6 +234,7 @@ def gather_context(conn: sqlite3.Connection, chat_id: int) -> dict:
         "active_users_6h": active_users,
         "recent_messages": recent_snippets,
         "hours_since_last_bot_action": round(hours_since_last, 1),
+        "messages_since_last_bot_action": msgs_since_last_action,
         "group_theme": group_theme or "(no theme profile yet)",
         "your_recent_observations": prior_notes or "(none yet)",
     }
@@ -235,7 +247,9 @@ def gather_context(conn: sqlite3.Connection, chat_id: int) -> dict:
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "KarlPopper")
 
 GLOBAL_GUIDELINES = [
-    "If the bot acted less than 2 hours ago, choose \"nothing\".",
+    "If the bot acted less than 4 hours ago, choose \"nothing\".",
+    "If messages_since_last_bot_action is fewer than 4, choose \"nothing\" — "
+    "the bot must not comment on its own previous messages or a near-empty feed.",
     "If there are fewer than 5 messages in the last 24h, the chat is quiet — choose \"nothing\".",
     "If the chat has been reasonably active (15+ messages in 24h) and it's been a while since the last action, lean toward doing something.",
     f"NEVER focus commentary or announcements on @{ADMIN_USERNAME}. "
@@ -289,6 +303,7 @@ def reason(context: dict) -> dict:
             f"last 7d: {context['message_counts']['7d']}\n"
             f"Active users (6h): {', '.join(context['active_users_6h']) or 'none'}\n"
             f"Hours since last bot action: {context['hours_since_last_bot_action']}\n"
+            f"Messages since last bot action: {context['messages_since_last_bot_action']}\n"
             f"\nGroup personality: {context['group_theme']}\n"
             f"\nYour recent observations:\n{context['your_recent_observations']}\n"
             f"\nRecent messages:\n" + "\n".join(context['recent_messages'][-10:])
@@ -559,7 +574,8 @@ async def tool_add_media(conn, chat_id, bot, params):
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
-        result = json.loads(raw)
+        # Use raw_decode to parse only the first JSON object and ignore any trailing text
+        result, _ = json.JSONDecoder().raw_decode(raw)
 
         if not result.get("found"):
             print("  add_media: no recommendation found in recent messages")
