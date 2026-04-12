@@ -28,20 +28,23 @@ The bot monitors two deployment contexts. The first is a standalone group chat. 
 
 ## Agent System
 
-The bot includes an autonomous decision layer powered by Google Gemini. After a configurable number of messages (default: 30), the agent gathers context — recent messages, open bets, the group's personality theme, and its own prior observations — and asks Gemini to decide whether to act or stay quiet. Most of the time, it chooses silence. See [[Agent System]] for the full architecture.
+The agent system is split into two separate processes that run on independent schedules. See [[Agent System]] for the full architecture.
 
-The agent has six tools at its disposal:
+**Observer** (`observer.py`) runs every 4 hours. It reads recent messages silently, asks Gemini to generate internal case notes, and writes them to the `case_notes` table. It never posts to any chat. When new notes are filed, it also triggers a wiki rebuild so People, Timeline, and Sincerity pages stay current between Friday runs.
+
+**Speaker** (`agent.py`) runs every 3 hours (and also after a configurable message-count threshold is crossed in bot.py). It reads the group's current state — including the Observer's accumulated case notes — and asks Gemini whether to act publicly. Most of the time it chooses silence.
+
+The Speaker has five tools:
 
 | Tool | What it does |
 |------|-------------|
 | `send_commentary` | Posts a brief field observation about recent conversation |
 | `illustrated_summary` | Generates an AI cartoon of the week's activity with a caption |
-| `nudge_bet` | Reminds the group about a stale, unsettled bet |
 | `sincerity_check` | Runs the DFW Sincerity Index and shares group-level results |
 | `add_media` | Extracts an organic media recommendation from chat and adds it to the watchlist |
 | `update_casefile` | Identifies a personality-revealing moment, updates a subject's profile, and announces the discovery |
 
-Tools self-register via a decorator pattern. The agent enforces a 2-hour cooldown between actions, ignores quiet chats (fewer than 5 messages in 24 hours), and is prohibited from focusing on the admin user.
+Tools self-register via a decorator pattern. The Speaker enforces the following rules before acting: a 4-hour cooldown since the last public action; at least 4 user messages posted since that action (prevents the bot commenting on its own output); at least 5 messages in the last 24 hours; and each tool may only fire once per run across all chats (preventing the same action from hitting multiple threads in a single sweep). The admin user is excluded from commentary targets.
 
 ## Weekly Reports
 
@@ -57,13 +60,13 @@ An admin cost DM closes the cycle, reporting Gemini API usage, estimated monthly
 
 The bot maintains a three-tier memory architecture. See [[Memory System]] for details.
 
-**Tier 1 — Case Notes.** Short-term observations recorded by the agent as it acts during the week. When the agent posts commentary, updates a case file, or generates an illustrated summary, the content is saved to a `case_notes` table tagged by type (`commentary`, `discovery`, `observation`) and optional target user.
+**Tier 1 — Case Notes.** Short-term observations written by the Observer every 4 hours. For each active chat the Observer generates 1–3 notes tagged by type (`observation`, `discovery`) and optional target user, then stores them in the `case_notes` table. The Speaker also writes notes when it posts publicly (`commentary`) or updates a case file (`discovery`). Notes accumulate between Friday runs and give the Speaker continuity — without them, each evaluation would be amnesiac.
 
-**Tier 2 — Profiles and Themes.** Long-term consolidated memory. Every Friday, Gemini merges each user's raw messages with any discovery notes from the past two weeks into a rolling **user profile** — a personality summary that tracks recurring topics, interests, communication style, and humor patterns. A parallel **group theme** profile captures the chat's culture: running jokes, shared references, dynamics. Both are written in third person and consolidate rather than append, dropping stale details that haven't recurred.
+**Tier 2 — Profiles and Themes.** Long-term consolidated memory. Every Friday, Gemini merges each user's raw messages with discovery notes from the past two weeks into a rolling **user profile** — a personality summary tracking recurring topics, interests, communication style, and humor patterns. A parallel **group theme** profile captures the chat's culture: running jokes, shared references, dynamics. The Observer also refreshes group themes mid-week when a chat generates 20+ messages in a 4-hour window. Both profile types consolidate rather than append, dropping stale details that have not recurred.
 
-**Tier 3 — Execution Log.** The `agent_actions` table records every decision the agent makes — what it chose, why, and whether it succeeded — primarily used for cooldown enforcement.
+**Tier 3 — Execution Log.** The `agent_actions` table records every public action the Speaker takes — what it chose, why, and whether it succeeded. Used for cooldown enforcement. Quiet `nothing` decisions are intentionally not logged, so the cooldown clock only resets when the bot actually speaks.
 
-Case notes flow upward: the agent's short-term observations are injected into the weekly profile and theme update prompts, so that the long-term memory absorbs what the bot noticed between reports. The agent also reads its last five case notes before each decision, giving it continuity between firings.
+Case notes flow upward into weekly profile updates, so the long-term memory absorbs what the Observer noticed between reports. The Speaker reads the five most recent case notes before each decision cycle.
 
 User profiles are versioned, and at milestones (2, 4, 8, 13, 26 weeks of observation), the bot announces the occasion to the group.
 
@@ -73,7 +76,7 @@ The `/dashboard` command opens a Telegram MiniApp — a single-page web applicat
 
 ## Infrastructure
 
-OTLCBot runs on a Raspberry Pi Zero W with three systemd services: the Telegram bot itself, the Flask webapp, and a Cloudflare tunnel manager that automatically captures new tunnel URLs on restart and updates the bot's configuration. Three cron jobs handle the Friday weekly report, a weekly database backup, and a monthly message prune (retaining one year of history by default). All data lives in a single SQLite database with ten tables. Configuration is entirely `.env`-driven, with toggleable features for AI summaries, sincerity scoring, and the agent layer. See [[Infrastructure]] for the full setup.
+OTLCBot runs on a Raspberry Pi Zero W with three systemd services: the Telegram bot, the Flask webapp, and a Cloudflare named tunnel serving `wiki.otlconline.net`. Five cron jobs run on schedule: the Observer (every 4 hours), the Speaker (every 3 hours), the Friday weekly report (OT at 3pm EST, Penetr8in at 4pm EST), a weekly database backup, and a monthly message prune retaining one year of history. All data lives in a single SQLite database. Configuration is entirely `.env`-driven, with toggleable features for AI summaries, sincerity scoring, and the agent layer. See [[Infrastructure]] for the full setup.
 
 ## Personality
 

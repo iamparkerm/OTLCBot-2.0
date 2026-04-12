@@ -22,6 +22,7 @@
     tr:nth-child(even) { background: #f8f9fa; }
     .breadcrumb { font-size: 13px; color: #555; margin-bottom: 8px; }
     .see-also { list-style: disc; padding-left: 24px; } .see-also li { margin: 4px 0; }
+    .updated { font-size: 12px; color: #888; margin-top: 32px; }
   </style>
 </head>
 <body>
@@ -31,40 +32,65 @@
 
     <p>The agent system is OTLCBot's autonomous decision layer. Unlike the bot's command handlers (which respond to explicit user input) or the weekly pipeline (which runs on a fixed schedule), the agent evaluates the chat's current state and decides for itself whether to act. This is the core of what makes OTLCBot an <a class="wikilink" href="https://en.wikipedia.org/wiki/Agentic_AI">agentic AI</a><span class="w-tag">(w)</span> application &mdash; the LLM is not just generating text on request but making autonomous decisions about when and how to intervene.</p>
 
-    <h2>Observe&ndash;Reason&ndash;Act Loop</h2>
+    <h2>Two-Agent Architecture</h2>
 
-    <p>The agent follows a three-phase cycle, triggered after every <code>AGENT_MSG_THRESHOLD</code> messages (default: 30) in a monitored chat:</p>
+    <p>The agent system is split into two independent processes: an <strong>Observer</strong> and a <strong>Speaker</strong>. They run on separate cron schedules and have no direct dependency on each other &mdash; the Observer writes to the database, the Speaker reads from it.</p>
+
+    <table>
+      <tr><th></th><th>Observer (<code>observer.py</code>)</th><th>Speaker (<code>agent.py</code>)</th></tr>
+      <tr><td><strong>Schedule</strong></td><td>Every 4 hours</td><td>Every 3 hours (+ message-count trigger)</td></tr>
+      <tr><td><strong>Output</strong></td><td>Writes to <code>case_notes</code> table; rebuilds wiki if notes filed</td><td>Posts publicly to Telegram chats</td></tr>
+      <tr><td><strong>Gemini calls</strong></td><td>Yes &mdash; generates observations</td><td>Yes &mdash; reasons about whether and how to act</td></tr>
+      <tr><td><strong>Bot object</strong></td><td>Not required</td><td>Required</td></tr>
+    </table>
+
+    <p>This separation means the bot accumulates observations continuously without over-posting. The Speaker reads the Observer's accumulated case notes as grounding context before each decision, giving it a richer picture of what has been happening between its own public actions.</p>
+
+    <h2>Observer: Observe&ndash;Record Loop</h2>
+
+    <p>For each configured chat, the Observer:</p>
+    <ol style="padding-left: 24px; margin-bottom: 10px;">
+      <li>Reads messages from the last 4 hours</li>
+      <li>Skips the chat if fewer than 3 messages arrived (nothing worth noting)</li>
+      <li>Asks Gemini to generate 1&ndash;3 internal case notes tagged as <code>observation</code> or <code>discovery</code></li>
+      <li>Writes the notes to the <code>case_notes</code> table (never visible to the group)</li>
+      <li>Refreshes the group theme if 20+ messages arrived in the window</li>
+    </ol>
+    <p>After all chats are processed, if any notes were filed, the Observer rebuilds the wiki (without Gemini) so People, Timeline, and Sincerity pages reflect the new data immediately.</p>
+
+    <h2>Speaker: Observe&ndash;Reason&ndash;Act Loop</h2>
+
+    <p>The Speaker runs every 3 hours via cron and also fires after <code>AGENT_MSG_THRESHOLD</code> messages (default: 50) accumulate in any chat via bot.py. For each chat:</p>
 
     <h3>1. Observe: Context Gathering</h3>
 
-    <p>The <code>build_context()</code> function assembles a snapshot of the chat's current state from the database:</p>
+    <p>The <code>gather_context()</code> function assembles a snapshot from the database:</p>
 
     <table>
       <tr><th>Context field</th><th>Source</th><th>Purpose</th></tr>
       <tr><td>Message counts (6h / 24h / 7d)</td><td><code>messages</code> table</td><td>Gauge activity level</td></tr>
       <tr><td>Active users (last 6h)</td><td><code>messages</code> table</td><td>Know who's talking</td></tr>
       <tr><td>Recent messages (last 15)</td><td><code>messages</code> table</td><td>See what's being discussed</td></tr>
-      <tr><td>Open bets</td><td><code>bets</code> table</td><td>Identify stale bets to nudge</td></tr>
-      <tr><td>Hours since last action</td><td><code>agent_actions</code> table</td><td>Enforce cooldown</td></tr>
+      <tr><td>Hours since last public action</td><td><code>agent_actions</code> table</td><td>Enforce cooldown</td></tr>
+      <tr><td>Messages since last public action</td><td><code>messages</code> table</td><td>Prevent commenting on own output</td></tr>
       <tr><td>Group theme</td><td><code>group_themes</code> table</td><td>Understand the chat's personality</td></tr>
-      <tr><td>Recent observations</td><td><code>case_notes</code> table (last 5)</td><td>Remember what the bot has already said</td></tr>
+      <tr><td>Recent case notes (last 5)</td><td><code>case_notes</code> table</td><td>Continuity — what the Observer has noticed</td></tr>
+      <tr><td>Tools already fired this run</td><td>In-memory set</td><td>Prevent same tool firing across multiple chats</td></tr>
     </table>
-
-    <p>This context is serialized as JSON and passed to Gemini as part of the reasoning prompt. The inclusion of prior case notes gives the agent <strong>continuity</strong> &mdash; without it, each evaluation would be amnesiac, potentially repeating observations or contradicting earlier commentary.</p>
 
     <h3>2. Reason: LLM Decision</h3>
 
     <p>The <code>reason()</code> function sends the context to Gemini with a dynamically-generated system prompt and asks it to choose an action. The model responds with <a class="wikilink" href="https://en.wikipedia.org/wiki/Prompt_engineering#Structured_output">structured output</a><span class="w-tag">(w)</span> &mdash; a JSON object specifying the action name, a one-sentence reason, and any parameters:</p>
 
-    <pre>{"action": "send_commentary", "reason": "Chat has been active discussing movies for 2 hours", "params": {}}</pre>
+    <pre>{"action": "send_commentary", "reason": "Chat active discussing movies, 6 messages since last action", "params": {}}</pre>
 
-    <p>The system prompt is generated at runtime by <code>build_system_prompt()</code>, which iterates over the tool registry and assembles the available actions, their descriptions, costs, and guidelines into the prompt. This means adding a new tool automatically makes it available to the agent's reasoning without any changes to the decision logic.</p>
+    <p>The system prompt is generated at runtime by <code>build_system_prompt()</code>, which iterates over the tool registry and assembles actions, descriptions, costs, and guidelines into the prompt. Adding a new tool automatically makes it available to the agent's reasoning.</p>
 
-    <p>The reasoning call uses low temperature (0.3) to encourage consistent, conservative decisions. The default action is <code>"nothing"</code> &mdash; the agent is biased toward silence.</p>
+    <p>The reasoning call uses low temperature (0.3) for consistent, conservative decisions. The default action is <code>"nothing"</code> &mdash; the agent is biased toward silence.</p>
 
     <h3>3. Act: Tool Execution</h3>
 
-    <p>If the chosen action is not <code>"nothing"</code>, the corresponding tool function is looked up in the registry and executed. Each tool receives the database connection, chat ID, bot instance, and any parameters from the reasoning step. After execution, the result (success or failure) is logged to <code>agent_actions</code>.</p>
+    <p>If the chosen action is not <code>"nothing"</code>, the corresponding tool is looked up in the registry and executed. After a successful execution, the action is logged to <code>agent_actions</code> and added to the <code>fired_this_cycle</code> set so it cannot fire again in the same run. Quiet <code>"nothing"</code> decisions are intentionally not logged &mdash; the cooldown clock only resets on public actions.</p>
 
     <h2>Tool Registry</h2>
 
@@ -74,41 +100,38 @@
     name="send_commentary",
     description="Send a brief observation about recent conversation.",
     guidelines="Only if chat active &amp; bot quiet for a while.",
-    cost=0.0015,
 )
 async def tool_send_commentary(conn, chat_id, bot, params):
     ...</pre>
 
-    <p>Each tool declares a <strong>cost</strong> (estimated Gemini API cost per invocation) and <strong>guidelines</strong> (natural-language instructions included in the agent's system prompt that help it decide when to use the tool). This is a form of <a class="wikilink" href="https://en.wikipedia.org/wiki/Tool_use_(LLM)">tool use</a><span class="w-tag">(w)</span> where the model selects from a menu of available functions based on their descriptions.</p>
+    <p>Each tool declares <strong>guidelines</strong> (natural-language instructions included in the system prompt) and an optional <strong>cost</strong> hint. This is a form of <a class="wikilink" href="https://en.wikipedia.org/wiki/Tool_use_(LLM)">tool use</a><span class="w-tag">(w)</span> where the model selects from a menu of functions based on their descriptions.</p>
 
     <h2>Tools in Detail</h2>
 
     <h3><code>send_commentary</code></h3>
-    <p>Reads the last 20 messages, the group theme, and the grounding block, then asks Gemini to write a single field observation (1&ndash;2 sentences). Uses high temperature (1.5) for varied, expressive output. Saves the commentary to <code>case_notes</code> as type <code>commentary</code>.</p>
+    <p>Reads the last 20 messages, group theme, and grounding block, then asks Gemini to write a single field observation (1&ndash;2 sentences). Uses high temperature (1.5) for expressive output. Saves the commentary to <code>case_notes</code> as type <code>commentary</code>.</p>
 
     <h3><code>illustrated_summary</code></h3>
-    <p>Pulls conversation windows from the past 7 days (across all Owl Town chats if applicable), generates an AI cartoon via Gemini's multimodal image model, then generates a caption. Sends the image and caption together. Saves the caption to <code>case_notes</code> as type <code>observation</code>. The most expensive tool at ~$0.04 per invocation.</p>
-
-    <h3><code>nudge_bet</code></h3>
-    <p>Finds open bets older than 14 days and sends a reminder to the group. A simple, deterministic tool that doesn't require Gemini &mdash; it just queries the database and formats a message.</p>
+    <p>Pulls conversation windows from the past 7 days (across all Owl Town chats if applicable), generates an AI cartoon via Gemini's image model, then posts it. Saves the image prompt to <code>case_notes</code>. The most expensive tool at ~$0.04 per invocation. Guidelines restrict it to once per week.</p>
 
     <h3><code>sincerity_check</code></h3>
-    <p>Runs the same DFW Sincerity Index analysis used in the weekly reports but triggered organically by the agent rather than on a schedule. Posts the group-level result without individual scores.</p>
+    <p>Runs the DFW Sincerity Index analysis mid-week, triggered organically by the agent rather than on a fixed schedule. Posts the group-level result without individual scores.</p>
 
     <h3><code>add_media</code></h3>
-    <p>Asks Gemini to scan recent messages for genuine media recommendations (not passing mentions). If found, checks for duplicates in the watchlist and adds the item. Uses low temperature (0.4) to avoid false positives.</p>
+    <p>Asks Gemini to scan recent messages for genuine media recommendations (not passing mentions). If found, checks for duplicates in the watchlist and adds the item. Uses low temperature (0.4) to avoid false positives. Uses <code>JSONDecoder.raw_decode()</code> to safely handle any trailing text in the model's response.</p>
 
     <h3><code>update_casefile</code></h3>
-    <p>Asks Gemini to identify the single most personality-revealing moment in recent messages. If found, updates the target user's rolling profile, regenerates their case file dossier, saves a <code>discovery</code> note to <code>case_notes</code>, and announces the update to the group. The admin user is filtered out of candidates.</p>
+    <p>Asks Gemini to identify the single most personality-revealing moment in recent messages. If found, updates the target user's rolling profile, regenerates their case file dossier, saves a <code>discovery</code> note to <code>case_notes</code>, and announces the update to the group. The admin user is excluded from candidates.</p>
 
     <h2>Global Constraints</h2>
 
     <table>
-      <tr><th>Rule</th><th>Purpose</th></tr>
-      <tr><td>2-hour cooldown between actions</td><td>Prevent the bot from dominating conversation</td></tr>
-      <tr><td>Skip if &lt;5 messages in 24h</td><td>Don't act in quiet chats</td></tr>
-      <tr><td>Lean toward action at 15+ messages in 24h</td><td>Be more active when the chat is lively</td></tr>
-      <tr><td>Never focus on admin (@KarlPopper)</td><td>Prevent the bot from profiling its creator</td></tr>
+      <tr><th>Rule</th><th>Enforced</th><th>Purpose</th></tr>
+      <tr><td>4-hour cooldown since last public action</td><td>In code (queries <code>agent_actions</code>)</td><td>Prevent dominating conversation</td></tr>
+      <tr><td>4+ user messages since last public action</td><td>In code (queries <code>messages</code>)</td><td>Prevent bot replying to its own output</td></tr>
+      <tr><td>5+ messages in last 24h</td><td>Prompt guideline + visible in context</td><td>Stay quiet in inactive chats</td></tr>
+      <tr><td>Each tool fires at most once per run</td><td>In code (<code>fired_this_cycle</code> set)</td><td>Prevent same action hitting multiple chats in one sweep</td></tr>
+      <tr><td>Never focus on admin user</td><td>Prompt guideline</td><td>Prevent profiling the bot's creator</td></tr>
     </table>
 
     <h2>See also</h2>
@@ -117,6 +140,8 @@ async def tool_send_commentary(conn, chat_id, bot, params):
       <li><a href="architecture.html">Architecture</a> &mdash; Where the agent fits in the overall system</li>
       <li><a href="wiki.html">Main article</a></li>
     </ul>
+
+    <p class="updated">Last updated: 2026-04-12</p>
   </div>
 </body>
 </html>
