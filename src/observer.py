@@ -158,7 +158,11 @@ def _observe_chat(conn: sqlite3.Connection, chat_id: int) -> None:
 # ============================================================
 
 def run_observer(chat_ids: list[int]) -> None:
-    """Run the observer across all provided chat IDs, then rebuild the wiki."""
+    """Run the observer across all provided chat IDs.
+
+    Rebuilds the wiki only if at least one new case note was filed — no point
+    writing pages when nothing changed.
+    """
     if not GEMINI_API_KEY:
         print("Observer: GEMINI_API_KEY not set, exiting.")
         return
@@ -166,24 +170,34 @@ def run_observer(chat_ids: list[int]) -> None:
     print(f"Observer: starting — {datetime.now(timezone.utc).isoformat()}")
     print(f"Observer: {len(chat_ids)} chat(s) to observe")
 
+    total_filed = 0
     with sqlite3.connect(DB_PATH) as conn:
         ensure_profile_tables(conn)
         for chat_id in chat_ids:
+            before = conn.execute(
+                "SELECT COUNT(*) FROM case_notes WHERE chat_id = ?;", (chat_id,)
+            ).fetchone()[0]
             _observe_chat(conn, chat_id)
+            after = conn.execute(
+                "SELECT COUNT(*) FROM case_notes WHERE chat_id = ?;", (chat_id,)
+            ).fetchone()[0]
+            total_filed += after - before
 
-    # Rebuild wiki from DB data so People, Timeline, and Sincerity pages
-    # reflect the latest case notes and profile updates immediately.
-    # Gemini-compiled sections (Topics, channel articles) are skipped here
-    # and compiled only during the full weekly run on Fridays.
-    print("Observer: rebuilding wiki (no-gemini)...")
-    try:
-        import sys as _sys
-        _sys.path.insert(0, str(ROOT / "src"))
-        from wiki import build_wiki
-        pages = build_wiki(gemini_enabled=False)
-        print(f"Observer: wiki rebuilt — {pages} pages written")
-    except Exception as e:
-        print(f"Observer: wiki rebuild failed — {e}")
+    if total_filed > 0:
+        # Rebuild wiki from DB so People, Timeline, and Sincerity pages reflect
+        # new observations immediately. Gemini-compiled sections (Topics, channel
+        # articles) are skipped here — those update only on the weekly Friday run.
+        print(f"Observer: {total_filed} note(s) filed — rebuilding wiki (no-gemini)...")
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(ROOT / "src"))
+            from wiki import build_wiki
+            pages = build_wiki(gemini_enabled=False)
+            print(f"Observer: wiki rebuilt — {pages} pages written")
+        except Exception as e:
+            print(f"Observer: wiki rebuild failed — {e}")
+    else:
+        print("Observer: no new notes filed — skipping wiki rebuild")
 
     print("Observer: done.\n")
 
