@@ -137,8 +137,20 @@ def ensure_agent_table(conn: sqlite3.Connection) -> None:
 # Observe
 # ============================================================
 
-def gather_context(conn: sqlite3.Connection, chat_id: int) -> dict:
-    """Build a snapshot of current group state for the agent to reason about."""
+def gather_context(
+    conn: sqlite3.Connection,
+    chat_id: int,
+    group_chat_ids: list[int] | None = None,
+) -> dict:
+    """Build a snapshot of current group state for the agent to reason about.
+
+    Args:
+        chat_id: The specific chat being evaluated.
+        group_chat_ids: All chat IDs that share a cooldown clock with this chat.
+            For Owl Town chats this is all 6 sub-chat IDs; for standalone chats
+            it's just [chat_id]. The cooldown is based on the most recent action
+            across the whole group, so one post anywhere in OT blocks all OT chats.
+    """
     now = datetime.now(timezone.utc)
 
     # Message counts at different time windows
@@ -177,10 +189,14 @@ def gather_context(conn: sqlite3.Connection, chat_id: int) -> dict:
     ).fetchall()
     recent_snippets = [f"{who}: {text[:150]}" for who, text in reversed(recent) if text]
 
-    # Hours since last agent action in this chat + messages since then
+    # Hours since last agent action across the whole group + messages since then.
+    # For OT chats, group_chat_ids contains all 6 sub-chat IDs so that one post
+    # anywhere in OT resets the clock for all of them.
+    cooldown_ids = group_chat_ids or [chat_id]
+    placeholders = ",".join("?" * len(cooldown_ids))
     last_action = conn.execute(
-        "SELECT executed_at FROM agent_actions WHERE chat_id = ? ORDER BY executed_at DESC LIMIT 1;",
-        (chat_id,),
+        f"SELECT executed_at FROM agent_actions WHERE chat_id IN ({placeholders}) ORDER BY executed_at DESC LIMIT 1;",
+        cooldown_ids,
     ).fetchone()
     last_action_dt = None
     if last_action:
@@ -247,7 +263,7 @@ def gather_context(conn: sqlite3.Connection, chat_id: int) -> dict:
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "KarlPopper")
 
 GLOBAL_GUIDELINES = [
-    "If the bot acted less than 4 hours ago, choose \"nothing\".",
+    "If the bot acted less than 72 hours ago (in this chat or any related chat in the same group), choose \"nothing\".",
     "If messages_since_last_bot_action is fewer than 4, choose \"nothing\" — "
     "the bot must not comment on its own previous messages or a near-empty feed.",
     "If there are fewer than 5 messages in the last 24h, the chat is quiet — choose \"nothing\".",
@@ -807,11 +823,17 @@ async def run_agent_loop(
             chat_id = int(chat_id_str)
             print(f"\n--- Agent evaluating chat {chat_id} ---")
 
+            # Determine group cooldown scope:
+            # OT chats share a clock — one post anywhere in OT blocks all OT chats.
+            # Penetr8in (and any other standalone chat) has its own independent clock.
+            is_owl_town = str(chat_id) in OWL_TOWN_CHAT_IDS
+            group_ids = [int(c) for c in OWL_TOWN_CHAT_IDS] if is_owl_town else [chat_id]
+
             # Observe
-            context = gather_context(conn, chat_id)
+            context = gather_context(conn, chat_id, group_chat_ids=group_ids)
             print(f"  Messages 6h/24h/7d: {context['message_counts']['6h']}/{context['message_counts']['24h']}/{context['message_counts']['7d']}")
             print(f"  Active users (6h): {context['active_users_6h']}")
-            print(f"  Hours since last action: {context['hours_since_last_bot_action']}")
+            print(f"  Hours since last action (group-wide): {context['hours_since_last_bot_action']}")
             if fired_this_cycle:
                 print(f"  Already fired this run: {', '.join(sorted(fired_this_cycle))}")
 
