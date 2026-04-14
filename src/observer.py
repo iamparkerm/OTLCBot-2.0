@@ -40,6 +40,7 @@ from profiles import ensure_profile_tables, get_group_theme, update_group_theme
 
 OBSERVE_WINDOW_HOURS = 4      # look back this far each run (matches cron interval)
 MIN_MESSAGES_TO_OBSERVE = 3   # skip chats quieter than this
+OBSERVE_COOLDOWN_HOURS = 48   # don't re-observe a chat more often than this
 THEME_UPDATE_THRESHOLD = 20   # update group theme after this many new messages
 
 
@@ -73,6 +74,21 @@ def _observe_chat(conn: sqlite3.Connection, chat_id: int) -> None:
     Generate internal observations for one chat and write them to case_notes.
     Optionally updates the group theme if there is enough new material.
     """
+    # Skip if this chat was observed within the cooldown window
+    last_note = conn.execute(
+        "SELECT created_at FROM case_notes WHERE chat_id = ? ORDER BY created_at DESC LIMIT 1;",
+        (chat_id,),
+    ).fetchone()
+    if last_note:
+        try:
+            last_dt = datetime.fromisoformat(last_note[0])
+            hours_since = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+            if hours_since < OBSERVE_COOLDOWN_HOURS:
+                print(f"  Observer chat {chat_id}: last observed {hours_since:.1f}h ago — skipping (< {OBSERVE_COOLDOWN_HOURS}h)")
+                return
+        except (ValueError, TypeError):
+            pass
+
     messages = _get_recent_messages(conn, chat_id)
 
     if len(messages) < MIN_MESSAGES_TO_OBSERVE:
