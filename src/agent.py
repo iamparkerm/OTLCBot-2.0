@@ -868,14 +868,12 @@ if __name__ == "__main__":
     import asyncio
     from telegram import Bot
 
-    from config import CHAT_IDS, OWL_TOWN_CHAT_IDS, TOKEN
+    from config import OWL_TOWN_CHAT_IDS, TOKEN
 
     async def _main() -> None:
-        # All chats: standalone (Penetr8in) + all OT channels
-        all_chat_ids: list[str] = list(CHAT_IDS)
-        for cid in OWL_TOWN_CHAT_IDS:
-            if cid not in all_chat_ids:
-                all_chat_ids.append(cid)
+        # Speaker runs for Owl Town chats only.
+        # Penetr8in gets commentary only via the weekly Friday report — no agent posts.
+        all_chat_ids: list[str] = list(OWL_TOWN_CHAT_IDS)
 
         if not all_chat_ids:
             print("Agent: no chat IDs configured, exiting.")
