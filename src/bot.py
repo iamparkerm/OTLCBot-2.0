@@ -496,17 +496,9 @@ async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             ),
         )
 
-    # Agent trigger: run agent loop after AGENT_MSG_THRESHOLD messages.
-    # Restricted to Owl Town chats only — Penetr8in gets no agent commentary.
-    OT_CHAT_IDS = set(os.getenv("OWL_TOWN_CHAT_IDS", "").replace(" ", "").split(","))
-    if ENABLE_AGENT and str(msg.chat_id) in OT_CHAT_IDS:
-        chat_id = msg.chat_id
-        _msg_counter[chat_id] = _msg_counter.get(chat_id, 0) + 1
-        if _msg_counter[chat_id] >= AGENT_MSG_THRESHOLD:
-            _msg_counter[chat_id] = 0
-            # Schedule agent loop as a background task (non-blocking)
-            import asyncio
-            asyncio.ensure_future(_run_agent_for_chat(str(chat_id), context))
+    # Agent (Speaker) trigger — currently disabled.
+    # All public commentary is handled by the weekly Friday report only.
+    # Re-enable by restoring the message-count trigger here and the Speaker cron.
 
 
 # ---------- /watch & /read (Watchlist) ----------
