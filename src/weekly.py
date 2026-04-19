@@ -67,6 +67,97 @@ from sincerity import (
 
 
 # ============================================================
+# Profile refresh (Editor responsibility)
+# ============================================================
+
+async def _refresh_all_profiles(
+    conn: sqlite3.Connection,
+    chat_ids: list[int],
+    bot,
+    week_of: str,
+    notify_chat_id: int,
+) -> int:
+    """Refresh profiles for ALL users active in the given chats over the past 14 days.
+
+    This runs independently of the sincerity analysis so every active member gets
+    a current case file — not just those who appeared in the sincerity pass.
+    Returns the number of Gemini text calls made.
+    """
+    if not (ENABLE_AI_SUMMARY and GEMINI_API_KEY):
+        return 0
+
+    since_iso = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+    placeholders = ",".join("?" * len(chat_ids))
+
+    active_users = conn.execute(
+        f"""SELECT DISTINCT m.user_id,
+               COALESCE(m.username, m.full_name, 'unknown') AS display_name
+            FROM messages m
+            WHERE m.chat_id IN ({placeholders})
+              AND m.sent_at_utc >= ?
+              AND m.user_id IS NOT NULL
+            ORDER BY display_name COLLATE NOCASE""",
+        chat_ids + [since_iso],
+    ).fetchall()
+
+    text_calls = 0
+    print(f"  Profile refresh: {len(active_users)} active user(s) across {len(chat_ids)} chat(s)")
+
+    for user_id, display_name in active_users:
+        try:
+            # Gather up to 30 recent messages from all chats combined
+            snippet_rows = conn.execute(
+                f"""SELECT COALESCE(username, full_name, 'unknown') || ': ' || text
+                    FROM messages
+                    WHERE chat_id IN ({placeholders})
+                      AND user_id = ?
+                      AND sent_at_utc >= ?
+                      AND text IS NOT NULL
+                      AND LENGTH(TRIM(text)) >= 5
+                    ORDER BY sent_at_utc DESC LIMIT 30""",
+                chat_ids + [user_id, since_iso],
+            ).fetchall()
+
+            if not snippet_rows:
+                continue
+
+            snippets = "\n".join(r[0] for r in snippet_rows)
+            user_profile = update_user_profile(conn, user_id, display_name, snippets)
+            text_calls += 1
+            print(f"    Refreshed: {display_name} ({len(user_profile)} chars)")
+
+            ver_row = conn.execute(
+                "SELECT version FROM user_profiles WHERE user_id = ?;", (user_id,)
+            ).fetchone()
+            version = ver_row[0] if ver_row else 1
+
+            # Pull the most recent sincerity score for irony colouring
+            irony_row = conn.execute(
+                """SELECT irony_pct FROM sincerity_scores
+                   WHERE username = ?
+                   ORDER BY week_of DESC LIMIT 1;""",
+                (display_name,),
+            ).fetchone()
+            irony_pct = float(irony_row[0]) if irony_row else 0.0
+
+            generate_case_file_text(conn, user_id, display_name, user_profile, version,
+                                    irony_pct=irony_pct)
+            text_calls += 1
+
+            milestone_msg = _check_dossier_milestone(version, display_name)
+            if milestone_msg:
+                try:
+                    await bot.send_message(chat_id=notify_chat_id, text=milestone_msg)
+                except Exception as e:
+                    print(f"    Milestone announcement failed for {display_name}: {e}")
+
+        except Exception as e:
+            print(f"    Profile refresh failed for {display_name}: {e}")
+
+    return text_calls
+
+
+# ============================================================
 # Admin cost DM + health check
 # ============================================================
 
@@ -270,7 +361,8 @@ async def send_weekly_async(group: str = "all") -> None:
         await bot.send_message(chat_id=chat_id_int, text=text)
         print(f"Sent weekly report to {chat_id_int}")
 
-        # Individual sincerity DMs + profile updates
+        # Individual sincerity DMs
+        # Profile updates are handled separately by _refresh_all_profiles (below).
         if sincerity_data and sincerity_data.get("users"):
             with sqlite3.connect(DB_PATH) as conn:
                 for display_name, irony_pct in sincerity_data["users"].items():
@@ -290,33 +382,6 @@ async def send_weekly_async(group: str = "all") -> None:
                             conn, chat_id_int, display_name, float(irony_pct), week_of
                         )
                         try:
-                            if ENABLE_AI_SUMMARY and GEMINI_API_KEY:
-                                since_dm = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-                                user_snippets = get_user_snippets(
-                                    conn, chat_id_int, display_name, since_dm
-                                )
-                                if user_snippets:
-                                    user_profile = update_user_profile(
-                                        conn, row[0], display_name, user_snippets
-                                    )
-                                    print(f"    Updated profile for {display_name} ({len(user_profile)} chars)")
-                                    text_calls += 1
-                                    ver_row = conn.execute(
-                                        "SELECT version FROM user_profiles WHERE user_id = ?;",
-                                        (row[0],),
-                                    ).fetchone()
-                                    version = ver_row[0] if ver_row else 1
-                                    generate_case_file_text(
-                                        conn, row[0], display_name, user_profile, version,
-                                        irony_pct=float(irony_pct),
-                                    )
-                                    text_calls += 1
-                                    milestone_msg = _check_dossier_milestone(version, display_name)
-                                    if milestone_msg:
-                                        try:
-                                            await bot.send_message(chat_id=chat_id_int, text=milestone_msg)
-                                        except Exception as e:
-                                            print(f"    Milestone announcement failed: {e}")
                             await bot.send_message(chat_id=row[0], text=dm_text)
                             print(f"  DM sent to {display_name} ({row[0]})")
                         except Exception as e:
@@ -404,6 +469,27 @@ async def send_weekly_async(group: str = "all") -> None:
         else:
             await bot.send_message(chat_id=send_to_int, text=owl_text)
         print(f"Sent Owl Town combined report to {send_to_int}")
+
+    # ── Profile refresh (all active users, both groups) ───────────────────
+    # Runs after reports/DMs are sent so the wiki rebuild gets fresh case files.
+    if group in ("all", "penetr8in"):
+        p8_ids = [
+            int(c) for c in CHAT_IDS
+            if not (owl_town_send_to_int and int(c) == owl_town_send_to_int)
+        ]
+        if p8_ids:
+            print(f"Refreshing profiles for Penetr8in ({len(p8_ids)} chat(s))")
+            with sqlite3.connect(DB_PATH) as conn:
+                tc = await _refresh_all_profiles(conn, p8_ids, bot, week_of, p8_ids[0])
+            text_calls += tc
+
+    if group in ("all", "owltown") and OWL_TOWN_CHAT_IDS:
+        ot_ids = [int(c) for c in OWL_TOWN_CHAT_IDS]
+        ot_notify = int(OWL_TOWN_SEND_TO) if OWL_TOWN_SEND_TO else ot_ids[0]
+        print(f"Refreshing profiles for Owl Town ({len(ot_ids)} chat(s))")
+        with sqlite3.connect(DB_PATH) as conn:
+            tc = await _refresh_all_profiles(conn, ot_ids, bot, week_of, ot_notify)
+        text_calls += tc
 
     # ── Admin cost DM + wiki rebuild (penetr8in or full run only) ─────────
     if group in ("all", "penetr8in"):

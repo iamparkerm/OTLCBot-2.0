@@ -345,6 +345,57 @@ Write the intro now."""
     return _gemini_call(prompt, temperature=0.9)
 
 
+def compile_timeline_article(conn: sqlite3.Connection) -> str:
+    """Synthesize recent case_notes into a group-dynamics narrative article.
+
+    Distinct from Topics (what they discuss) and People (who they are) — this
+    page is about HOW the group behaves: mood shifts, activity patterns, recurring
+    tensions or affinities, how the collective energy has evolved across channels.
+    """
+    chat_ids = list(OWL_TOWN_CHATS.keys())
+    placeholders = ",".join("?" * len(chat_ids))
+    rows = conn.execute(
+        f"""SELECT chat_id, note_type, target_username, note_text, created_at
+            FROM case_notes
+            WHERE chat_id IN ({placeholders})
+              AND created_at >= datetime('now', '-14 days')
+            ORDER BY created_at ASC""",
+        chat_ids,
+    ).fetchall()
+
+    if not rows:
+        return ""
+
+    notes_block = "\n".join(
+        "[{date} | {ch} | {ntype}{who}] {text}".format(
+            date=_fmt_date(r[4]),
+            ch=OWL_TOWN_CHATS.get(str(r[0]), str(r[0])),
+            ntype=r[1],
+            who=f" re: @{r[2]}" if r[2] else "",
+            text=r[3],
+        )
+        for r in rows
+    )
+
+    prompt = (
+        "You are an observational bot — meticulous, wry, quietly fascinated by humans "
+        "the way a field naturalist is fascinated by migratory birds. "
+        "You are writing the Timeline article for the Owl Town research wiki.\n\n"
+        "Based on your field notes from the past two weeks, write a 350-500 word "
+        "narrative article about GROUP DYNAMICS — not the topics they discuss (that "
+        "is the Topics page) and not individual profiles (that is the People page). "
+        "Focus on: behavioral patterns, mood shifts, who has been more active or "
+        "withdrawn, recurring tensions or affinities between people, how the group's "
+        "collective energy has evolved across channels.\n\n"
+        "Write as a proper wiki article in your observational voice — third person, "
+        "wry, field-report style. Use 2-3 sections with ## subheadings. "
+        "Plain prose only, no bullet lists. Begin directly with the first ## heading.\n\n"
+        f"Field notes ({len(rows)} observations, last 14 days):\n"
+        f"{notes_block}"
+    )
+    return _gemini_call(prompt, temperature=0.85)
+
+
 # ============================================================
 # HTML render functions
 # ============================================================
@@ -616,12 +667,15 @@ def render_topics_page(topics: list[dict], known_usernames: set[str] | None = No
     )
 
 
-def render_timeline(entries: list[tuple], known_usernames: set[str] | None = None) -> str:
-    if not entries:
+def render_timeline(entries: list[tuple], known_usernames: set[str] | None = None,
+                    article: str = "") -> str:
+    if not entries and not article:
         body = "<p>No field observations recorded yet.</p>"
         return render_page("Timeline", "<a href='/'>Owl Town</a> &rsaquo; Timeline", body)
 
     ku = known_usernames or set()
+
+    # Raw observation cards (used either as body or inside the collapsible log)
     cards = ""
     for chat_id, note_type, target, text, created_at in entries:
         channel = OWL_TOWN_CHATS.get(str(chat_id), str(chat_id))
@@ -639,10 +693,33 @@ def render_timeline(entries: list[tuple], known_usernames: set[str] | None = Non
             f"</div>\n"
         )
 
+    if article:
+        # Render article prose, converting ## headings to <h2>
+        article_html = ""
+        for line in article.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("## "):
+                article_html += f"<h2>{html.escape(stripped[3:])}</h2>\n"
+            elif stripped:
+                article_html += f"<p>{linkify_usernames(html.escape(stripped), ku)}</p>\n"
+
+        observer_log = ""
+        if cards:
+            observer_log = (
+                f'<details style="margin-top:28px">'
+                f'<summary style="cursor:pointer;color:#555;font-size:13px">'
+                f'Observer Log ({len(entries)} entries)</summary>'
+                f'<div style="margin-top:12px">{cards}</div>'
+                f'</details>'
+            )
+        body = article_html + observer_log
+    else:
+        body = cards if cards else "<p>No field observations recorded yet.</p>"
+
     return render_page(
         "Timeline",
         "<a href='/'>Owl Town</a> &rsaquo; Timeline",
-        cards,
+        body,
     )
 
 
@@ -715,6 +792,7 @@ def build_wiki(gemini_enabled: bool = True) -> int:
         channel_articles: dict[str, str] = {}
         topics: list[dict] = []
         lede = ""
+        timeline_article = ""
 
         if gemini_enabled and GEMINI_API_KEY:
             print("[wiki] Compiling channel articles...")
@@ -732,6 +810,9 @@ def build_wiki(gemini_enabled: bool = True) -> int:
             ]
             print("[wiki] Compiling index lede...")
             lede = compile_index_lede(summaries)
+
+            print("[wiki] Compiling timeline article...")
+            timeline_article = compile_timeline_article(conn)
         else:
             print("[wiki] Gemini disabled — building data-only wiki.")
 
@@ -787,7 +868,8 @@ def build_wiki(gemini_enabled: bool = True) -> int:
     pages += 1
 
     # Timeline
-    write_page(WIKI_DIR / "timeline.html", render_timeline(timeline_entries, known_usernames))
+    write_page(WIKI_DIR / "timeline.html", render_timeline(timeline_entries, known_usernames,
+                                                            article=timeline_article))
     pages += 1
 
     # Sincerity
